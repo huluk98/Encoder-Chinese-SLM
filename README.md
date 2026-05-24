@@ -82,4 +82,4 @@ Set `RUN_CEVAL_AFTER_TRAIN=0` if you want to train first and run C-Eval manually
 python scripts/train.py --config configs/smoke.yaml
 ```
 
-The H20 config uses 8 GPUs, BF16, DeepSpeed ZeRO-1 with FusedAdam, SDPA attention, a 29,298-token Chinese BPE tokenizer with `<|mask|>`, 512-token bidirectional blocks, and 15% dynamic masked language modeling. The per-GPU microbatch is set to 128 with gradient accumulation 2, matching the decoder recipe's 1,048,576 input tokens per optimizer step while giving the encoder shorter, high-throughput sequences.
+The H20 config uses 8 GPUs, BF16, DeepSpeed ZeRO-1 with FusedAdam, SDPA attention, a 29,298-token Chinese BPE tokenizer with `<|mask|>`, 512-token bidirectional blocks, and 15% dynamic masked language modeling. The model is approximately 0.194B parameters, close to the intended 0.2B class. The per-GPU microbatch is set to 128 with gradient accumulation 2, matching the decoder recipe's 1,048,576 input tokens per optimizer step while giving the encoder shorter, high-throughput sequences.

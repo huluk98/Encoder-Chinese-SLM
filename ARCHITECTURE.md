@@ -28,7 +28,7 @@ The main config is `configs/h20_8gpu_bert_0p2b_deepspeed.yaml`:
 | Layers | 24 |
 | Hidden size | 768 |
 | Attention heads | 12 |
-| FFN/intermediate size | 2048 |
+| FFN/intermediate size | 3072 |
 | Activation | GELU |
 | Dropout | 0.0 |
 | Embeddings | tied MLM decoder embeddings |
@@ -36,7 +36,7 @@ The main config is `configs/h20_8gpu_bert_0p2b_deepspeed.yaml`:
 | Precision | BF16 |
 | Distributed runtime | DeepSpeed ZeRO-1 |
 
-This is a custom compact Chinese BERT-style encoder. It borrows the BERT encoder/MLM form, but its dimensions are not exactly BERT-base or BERT-large.
+This is a custom compact Chinese BERT-style encoder. It borrows the BERT encoder/MLM form, but its dimensions are not exactly BERT-base or BERT-large. With the H20 config above, the model is approximately 0.194B parameters, close to the intended 0.2B class.
 
 ## What It Is Not
 
