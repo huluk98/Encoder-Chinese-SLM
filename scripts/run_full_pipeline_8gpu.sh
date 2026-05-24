@@ -5,6 +5,7 @@ CONFIG="${CONFIG:-configs/h20_8gpu_bert_0p2b_deepspeed.yaml}"
 PYTHON="${PYTHON:-python}"
 FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-0}"
 FORCE_PREPARE="${FORCE_PREPARE:-0}"
+FORCE_TOKENIZER="${FORCE_TOKENIZER:-0}"
 FORCE_PACK="${FORCE_PACK:-0}"
 RUN_CEVAL_AFTER_TRAIN="${RUN_CEVAL_AFTER_TRAIN:-1}"
 CEVAL_SPLIT="${CEVAL_SPLIT:-val}"
@@ -54,6 +55,7 @@ echo "[pipeline] Python/DeepSpeed inventory"
 
 download_args=(--config "${CONFIG}")
 prepare_args=(--config "${CONFIG}")
+tokenizer_args=(--config "${CONFIG}")
 pack_args=(--config "${CONFIG}")
 
 if [[ "${FORCE_DOWNLOAD}" == "1" || "${FORCE_DOWNLOAD}" == "true" ]]; then
@@ -62,6 +64,9 @@ if [[ "${FORCE_DOWNLOAD}" == "1" || "${FORCE_DOWNLOAD}" == "true" ]]; then
 fi
 if [[ "${FORCE_PREPARE}" == "1" || "${FORCE_PREPARE}" == "true" ]]; then
   prepare_args+=(--force)
+fi
+if [[ "${FORCE_TOKENIZER}" == "1" || "${FORCE_TOKENIZER}" == "true" ]]; then
+  tokenizer_args+=(--force)
 fi
 if [[ "${FORCE_PACK}" == "1" || "${FORCE_PACK}" == "true" ]]; then
   pack_args+=(--force)
@@ -74,7 +79,7 @@ echo "[pipeline] Normalizing corpus"
 "${PYTHON}" scripts/prepare_data.py "${prepare_args[@]}"
 
 echo "[pipeline] Training encoder tokenizer"
-"${PYTHON}" scripts/train_tokenizer.py --config "${CONFIG}"
+"${PYTHON}" scripts/train_tokenizer.py "${tokenizer_args[@]}"
 
 echo "[pipeline] Packing token ids"
 "${PYTHON}" scripts/pack_tokens.py "${pack_args[@]}"

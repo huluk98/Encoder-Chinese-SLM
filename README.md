@@ -76,6 +76,8 @@ python scripts/eval_ceval.py --checkpoint runs/h20-8gpu-bert-0p2b-mlm-deepspeed/
 
 Set `RUN_CEVAL_AFTER_TRAIN=0` if you want to train first and run C-Eval manually later.
 
+The pipeline skips an already-created tokenizer and packed token file by default. Use `FORCE_TOKENIZER=1` or `FORCE_PACK=1` only when you intentionally want to rebuild those artifacts.
+
 ## Smoke Run
 
 ```bash

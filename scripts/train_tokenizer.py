@@ -23,10 +23,17 @@ def main() -> None:
     parser.add_argument("--skip-prepare", action="store_true", help="Train directly from configured raw sources.")
     parser.add_argument("--force-prepare", action="store_true", help="Rebuild the normalized JSONL before training.")
     parser.add_argument("--force-download", action="store_true", help="Re-download Hugging Face snapshots before preprocessing.")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing tokenizer directory.")
     args = parser.parse_args()
 
     config = load_config(args.config)
     tokenizer_config = config["tokenizer"]
+    output_dir = Path(args.output_dir or tokenizer_config["path"]).expanduser()
+    if output_dir.exists() and (output_dir / "tokenizer.json").exists() and not args.force:
+        print(f"Tokenizer already exists: {output_dir}")
+        print("Use --force to rebuild it.")
+        return
+
     data_config = (
         config["data"]
         if args.skip_prepare
@@ -38,7 +45,6 @@ def main() -> None:
     if max_samples is not None:
         texts = islice(texts, int(max_samples))
 
-    output_dir = args.output_dir or tokenizer_config["path"]
     tokenizer = train_tokenizer_from_iterator(
         texts=texts,
         output_dir=output_dir,
