@@ -44,6 +44,7 @@ def train_tokenizer_from_iterator(
         vocab_size=int(vocab_size),
         min_frequency=int(min_frequency),
         special_tokens=SPECIAL_TOKENS,
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
         show_progress=True,
     )
     tokenizer.train_from_iterator(texts, trainer=trainer)

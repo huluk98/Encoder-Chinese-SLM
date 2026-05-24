@@ -6,6 +6,12 @@ PYTHON="${PYTHON:-python}"
 FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-0}"
 FORCE_PREPARE="${FORCE_PREPARE:-0}"
 FORCE_PACK="${FORCE_PACK:-0}"
+RUN_CEVAL_AFTER_TRAIN="${RUN_CEVAL_AFTER_TRAIN:-1}"
+CEVAL_SPLIT="${CEVAL_SPLIT:-val}"
+CEVAL_N_SHOT="${CEVAL_N_SHOT:-5}"
+CEVAL_SUBJECTS="${CEVAL_SUBJECTS:-all}"
+CEVAL_DTYPE="${CEVAL_DTYPE:-bf16}"
+CEVAL_DEVICE="${CEVAL_DEVICE:-auto}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
@@ -75,3 +81,33 @@ echo "[pipeline] Packing token ids"
 
 echo "[pipeline] Launching 8-GPU masked LM training"
 PACK_TOKENS=0 CONFIG="${CONFIG}" PYTHON="${PYTHON}" ./scripts/launch_h20_8gpu.sh "$@"
+
+if [[ "${RUN_CEVAL_AFTER_TRAIN}" == "1" || "${RUN_CEVAL_AFTER_TRAIN}" == "true" ]]; then
+  DEFAULT_CHECKPOINT="$(CONFIG_PATH="${CONFIG}" "${PYTHON}" -c "import os, yaml; config=yaml.safe_load(open(os.environ['CONFIG_PATH'], encoding='utf-8')) or {}; print(str(config.get('run', {}).get('output_dir', 'runs/default')).rstrip('/') + '/latest')")"
+  CEVAL_CHECKPOINT="${CEVAL_CHECKPOINT:-${DEFAULT_CHECKPOINT}}"
+  CEVAL_OUTPUT_DIR="${CEVAL_OUTPUT_DIR:-eval_results/ceval/latest}"
+
+  if [[ ! -e "${CEVAL_CHECKPOINT}" ]]; then
+    echo "[pipeline] C-Eval checkpoint not found: ${CEVAL_CHECKPOINT}" >&2
+    exit 2
+  fi
+
+  ceval_args=(
+    --checkpoint "${CEVAL_CHECKPOINT}"
+    --split "${CEVAL_SPLIT}"
+    --n-shot "${CEVAL_N_SHOT}"
+    --subjects "${CEVAL_SUBJECTS}"
+    --output-dir "${CEVAL_OUTPUT_DIR}"
+    --dtype "${CEVAL_DTYPE}"
+    --device "${CEVAL_DEVICE}"
+  )
+  if [[ -n "${CEVAL_LIMIT:-}" ]]; then
+    ceval_args+=(--limit "${CEVAL_LIMIT}")
+  fi
+  if [[ -n "${CEVAL_MAX_SUBJECTS:-}" ]]; then
+    ceval_args+=(--max-subjects "${CEVAL_MAX_SUBJECTS}")
+  fi
+
+  echo "[pipeline] Running C-Eval after training | checkpoint=${CEVAL_CHECKPOINT} | split=${CEVAL_SPLIT} | n_shot=${CEVAL_N_SHOT}"
+  "${PYTHON}" scripts/eval_ceval.py "${ceval_args[@]}"
+fi

@@ -13,6 +13,7 @@ The full H20 recipe keeps the same public Chinese data blend and tokenizer-first
 See [REFERENCES.md](REFERENCES.md) for the model, systems, and dataset sources cited for this setup.
 See [ENVIRONMENT.md](ENVIRONMENT.md) for the dedicated H20 environment recipe and preflight checks.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the exact architecture classification and citations.
+See [BENCHMARKS.md](BENCHMARKS.md) for C-Eval output notes after training.
 
 ## Setup
 
@@ -66,6 +67,14 @@ Plot loss:
 ```bash
 python scripts/plot_loss.py --metrics runs/h20-8gpu-bert-0p2b-mlm-deepspeed/metrics/training_metrics.csv
 ```
+
+The full pipeline also runs encoder-style C-Eval after training and writes results to `eval_results/ceval/latest`:
+
+```bash
+python scripts/eval_ceval.py --checkpoint runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest --split val --n-shot 5
+```
+
+Set `RUN_CEVAL_AFTER_TRAIN=0` if you want to train first and run C-Eval manually later.
 
 ## Smoke Run
 

@@ -28,6 +28,15 @@ This project is an encoder-only masked language model training counterpart to th
 - Hugging Face dataset streaming documentation  
   https://huggingface.co/docs/datasets/v3.0.2/stream
 
+## Evaluation
+
+- C-Eval benchmark paper: "C-Eval: A Multi-Level Multi-Discipline Chinese Evaluation Suite for Foundation Models"  
+  https://arxiv.org/abs/2305.08322
+- C-Eval benchmark website  
+  https://cevalbenchmark.com/index.html
+- Hugging Face C-Eval dataset used by `scripts/eval_ceval.py`  
+  https://huggingface.co/datasets/ceval/ceval-exam
+
 ## Configured Public Corpus Sources
 
 - YeungNLP/firefly-pretrain-dataset  
