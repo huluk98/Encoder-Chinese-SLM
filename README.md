@@ -11,6 +11,7 @@ The full H20 recipe keeps the same public Chinese data blend and tokenizer-first
 - BELLE 1M, 2M, and 3.5M Chinese instruction/chat data
 
 See [REFERENCES.md](REFERENCES.md) for the model, systems, and dataset sources cited for this setup.
+See [ENVIRONMENT.md](ENVIRONMENT.md) for the dedicated H20 environment recipe and preflight checks.
 
 ## Setup
 
