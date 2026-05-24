@@ -12,6 +12,7 @@ The full H20 recipe keeps the same public Chinese data blend and tokenizer-first
 
 See [REFERENCES.md](REFERENCES.md) for the model, systems, and dataset sources cited for this setup.
 See [ENVIRONMENT.md](ENVIRONMENT.md) for the dedicated H20 environment recipe and preflight checks.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the exact architecture classification and citations.
 
 ## Setup
 
