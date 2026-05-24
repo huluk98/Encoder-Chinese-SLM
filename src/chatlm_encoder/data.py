@@ -489,6 +489,29 @@ def iter_texts(data_config: dict[str, Any], rank: int = 0, world_size: int = 1) 
             yield text
 
 
+def _resolve_cls_token_id(tokenizer: Any, add_cls: bool) -> int | None:
+    if not add_cls:
+        return None
+    cls_token_id = getattr(tokenizer, "cls_token_id", None)
+    if cls_token_id is None:
+        raise ValueError("data.add_cls is true, but the tokenizer does not define cls_token_id.")
+    return int(cls_token_id)
+
+
+def _payload_size_for_block(block_size: int, cls_token_id: int | None) -> int:
+    prefix_tokens = 1 if cls_token_id is not None else 0
+    payload_size = int(block_size) - prefix_tokens
+    if payload_size < 1:
+        raise ValueError("block_size must leave room for at least one non-CLS token.")
+    return payload_size
+
+
+def _with_cls_prefix(payload: list[int], cls_token_id: int | None) -> list[int]:
+    if cls_token_id is None:
+        return payload
+    return [cls_token_id, *payload]
+
+
 class TokenBlockDataset(IterableDataset):
     def __init__(
         self,
@@ -496,6 +519,7 @@ class TokenBlockDataset(IterableDataset):
         tokenizer: Any,
         block_size: int,
         drop_last: bool = True,
+        add_cls: bool = True,
         add_eos: bool = True,
         rank: int = 0,
         world_size: int = 1,
@@ -504,6 +528,8 @@ class TokenBlockDataset(IterableDataset):
         self.tokenizer = tokenizer
         self.block_size = int(block_size)
         self.drop_last = bool(drop_last)
+        self.cls_token_id = _resolve_cls_token_id(tokenizer, bool(add_cls))
+        self.payload_size = _payload_size_for_block(self.block_size, self.cls_token_id)
         self.add_eos = bool(add_eos)
         self.rank = int(rank)
         self.world_size = int(world_size)
@@ -525,13 +551,13 @@ class TokenBlockDataset(IterableDataset):
                 ids.append(eos_id)
             buffer.extend(ids)
 
-            while len(buffer) >= self.block_size:
-                chunk = buffer[: self.block_size]
-                del buffer[: self.block_size]
-                yield {"input_ids": chunk}
+            while len(buffer) >= self.payload_size:
+                payload = [int(token_id) for token_id in buffer[: self.payload_size]]
+                del buffer[: self.payload_size]
+                yield {"input_ids": _with_cls_prefix(payload, self.cls_token_id)}
 
-        if not self.drop_last and len(buffer) > 1:
-            yield {"input_ids": buffer}
+        if not self.drop_last and buffer:
+            yield {"input_ids": _with_cls_prefix([int(token_id) for token_id in buffer], self.cls_token_id)}
 
 
 class PackedTokenDataset(IterableDataset):
@@ -540,6 +566,7 @@ class PackedTokenDataset(IterableDataset):
         token_ids_path: str | Path,
         token_ids_dtype: str,
         block_size: int,
+        cls_token_id: int | None = None,
         rank: int = 0,
         world_size: int = 1,
         start_block_offset: int = 0,
@@ -547,6 +574,8 @@ class PackedTokenDataset(IterableDataset):
         self.token_ids_path = Path(token_ids_path).expanduser()
         self.token_ids_dtype = str(token_ids_dtype)
         self.block_size = int(block_size)
+        self.cls_token_id = int(cls_token_id) if cls_token_id is not None else None
+        self.payload_size = _payload_size_for_block(self.block_size, self.cls_token_id)
         self.rank = int(rank)
         self.world_size = int(world_size)
         self.start_block_offset = int(start_block_offset)
@@ -566,16 +595,17 @@ class PackedTokenDataset(IterableDataset):
             worker_world_size = self.world_size * worker.num_workers
 
         token_ids = np.memmap(self.token_ids_path, dtype=np.dtype(self.token_ids_dtype), mode="r")
-        total_blocks = int(token_ids.shape[0]) // self.block_size
+        total_blocks = int(token_ids.shape[0]) // self.payload_size
         if total_blocks <= 0:
             return
 
         start_offset = self.start_block_offset % total_blocks
         for local_block_index in range(worker_rank, total_blocks, worker_world_size):
             block_index = (start_offset + local_block_index) % total_blocks
-            start = block_index * self.block_size
-            end = start + self.block_size
-            yield {"input_ids": token_ids[start:end].astype(np.int64, copy=False).tolist()}
+            start = block_index * self.payload_size
+            end = start + self.payload_size
+            payload = token_ids[start:end].astype(np.int64, copy=False).tolist()
+            yield {"input_ids": _with_cls_prefix(payload, self.cls_token_id)}
 
 
 def masked_lm_collate(
@@ -661,17 +691,22 @@ def build_dataloader(
         raise RuntimeError("Install `torch` to build a training dataloader.")
 
     token_ids_path = data_config.get("token_ids_path")
+    add_cls = bool(data_config.get("add_cls", True))
+    cls_token_id = _resolve_cls_token_id(tokenizer, add_cls)
     if token_ids_path and Path(token_ids_path).expanduser().exists():
         dataset = PackedTokenDataset(
             token_ids_path=token_ids_path,
             token_ids_dtype=str(data_config.get("token_ids_dtype", "uint16")),
             block_size=block_size,
+            cls_token_id=cls_token_id,
             rank=rank,
             world_size=world_size,
             start_block_offset=int(data_config.get("start_block_offset", 0)),
         )
         if rank == 0:
             print(f"[data] Training from packed token ids: {Path(token_ids_path).expanduser()}")
+            if cls_token_id is not None:
+                print(f"[data] Prepending CLS token id {cls_token_id} to every {int(block_size)}-token block.")
             if int(data_config.get("start_block_offset", 0)) > 0:
                 print(f"[data] Packed-token resume offset: {int(data_config['start_block_offset']):,} blocks")
     else:
@@ -686,10 +721,13 @@ def build_dataloader(
             tokenizer=tokenizer,
             block_size=block_size,
             drop_last=bool(data_config.get("drop_last", True)),
+            add_cls=add_cls,
             add_eos=bool(data_config.get("add_eos", True)),
             rank=rank,
             world_size=world_size,
         )
+        if rank == 0 and cls_token_id is not None:
+            print(f"[data] Prepending CLS token id {cls_token_id} to every {int(block_size)}-token block.")
     loader_kwargs: dict[str, Any] = {
         "batch_size": int(batch_size),
         "num_workers": int(num_workers),

@@ -13,6 +13,7 @@ The full H20 recipe keeps the same public Chinese data blend and tokenizer-first
 See [REFERENCES.md](REFERENCES.md) for the model, systems, and dataset sources cited for this setup.
 See [ENVIRONMENT.md](ENVIRONMENT.md) for the dedicated H20 environment recipe and preflight checks.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the exact architecture classification and citations.
+See [PRETRAINING_AUDIT.md](PRETRAINING_AUDIT.md) for the BERT/RoBERTa tokenization and MLM training audit.
 See [BENCHMARKS.md](BENCHMARKS.md) for C-Eval output notes after training.
 
 ## Setup
@@ -84,4 +85,4 @@ The pipeline skips an already-created tokenizer and packed token file by default
 python scripts/train.py --config configs/smoke.yaml
 ```
 
-The H20 config uses 8 GPUs, BF16, DeepSpeed ZeRO-1 with FusedAdam, SDPA attention, a 29,298-token Chinese BPE tokenizer with `<|mask|>`, 512-token bidirectional blocks, and 15% dynamic masked language modeling. The model is approximately 0.194B parameters, close to the intended 0.2B class. The per-GPU microbatch is set to 128 with gradient accumulation 2, matching the decoder recipe's 1,048,576 input tokens per optimizer step while giving the encoder shorter, high-throughput sequences.
+The H20 config uses 8 GPUs, BF16, DeepSpeed ZeRO-1 with FusedAdam, SDPA attention, a 29,298-token Chinese BPE tokenizer with `<|mask|>`, 512-token bidirectional blocks with a CLS-style prefix, and 15% dynamic masked language modeling. The model is approximately 0.194B parameters, close to the intended 0.2B class. The per-GPU microbatch is set to 128 with gradient accumulation 2, matching the decoder recipe's 1,048,576 input tokens per optimizer step while giving the encoder shorter, high-throughput sequences.

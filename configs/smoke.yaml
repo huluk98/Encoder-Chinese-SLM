@@ -40,6 +40,7 @@ model:
 data:
   streaming: false
   drop_last: false
+  add_cls: true
   add_eos: true
   mask_probability: 0.20
   random_token_probability: 0.1

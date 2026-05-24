@@ -53,6 +53,7 @@ data:
   hf_endpoint: null
   shuffle_buffer: 50000
   drop_last: true
+  add_cls: true
   add_eos: true
   mask_probability: 0.15
   random_token_probability: 0.1

@@ -10,6 +10,12 @@ This project is an encoder-only masked language model training counterpart to th
   https://github.com/google-research/bert
 - Hugging Face Transformers BERT documentation, including `BertForMaskedLM`  
   https://huggingface.co/docs/transformers/en/model_doc/bert
+- Hugging Face Transformers data collator documentation, including the standard MLM 15% and 80/10/10 masking controls  
+  https://huggingface.co/docs/transformers/main_classes/data_collator
+- RoBERTa model documentation, covering dynamic masking, sentence packing, byte-level BPE, and no token type IDs  
+  https://huggingface.co/docs/transformers/main/model_doc/roberta
+- Liu et al., "RoBERTa: A Robustly Optimized BERT Pretraining Approach"  
+  https://arxiv.org/abs/1907.11692
 - Vaswani et al., "Attention Is All You Need"  
   https://papers.neurips.cc/paper/7181-attention-is-all-you-need
 - PyTorch scaled dot product attention documentation  

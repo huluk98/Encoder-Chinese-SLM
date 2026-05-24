@@ -45,6 +45,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     config["data"].setdefault("sources", [])
     config["data"].setdefault("streaming", True)
     config["data"].setdefault("drop_last", True)
+    config["data"].setdefault("add_cls", True)
     config["data"].setdefault("add_eos", True)
     config["data"].setdefault("seed", config["run"]["seed"])
     config["data"].setdefault("token_ids_path", None)

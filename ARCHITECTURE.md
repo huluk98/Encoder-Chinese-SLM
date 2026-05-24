@@ -13,7 +13,8 @@ More specifically, it is a **BERT/RoBERTa-style bidirectional Transformer encode
 - **Tokenizer:** Chinese-friendly byte-level BPE with explicit `<|mask|>` token.
 - **NSP objective:** not used.
 - **Position encoding:** classic BERT absolute position embeddings.
-- **Training style:** RoBERTa-like in the sense that masks are generated dynamically and no next-sentence-prediction loss is used.
+- **Training style:** RoBERTa-like in the sense that masks are generated dynamically, blocks are packed, and no next-sentence-prediction loss is used.
+- **Block format:** every 512-token training block receives a CLS-style prefix token; records are separated with `<|eos|>`, mapped as the tokenizer SEP token.
 
 ## H20 Model Shape
 
@@ -37,6 +38,16 @@ The main config is `configs/h20_8gpu_bert_0p2b_deepspeed.yaml`:
 | Distributed runtime | DeepSpeed ZeRO-1 |
 
 This is a custom compact Chinese BERT-style encoder. It borrows the BERT encoder/MLM form, but its dimensions are not exactly BERT-base or BERT-large. With the H20 config above, the model is approximately 0.194B parameters, close to the intended 0.2B class.
+
+## Pretraining Recipe Classification
+
+The training pipeline is **correct for modern BERT-family MLM pretraining**, but it is **not a strict original BERT reproduction**. The important distinction:
+
+- It keeps the BERT-family essentials: bidirectional encoder, CLS token at block start, SEP/EOS record separators, MLM head, 15% dynamic masking, and the 80/10/10 mask replacement rule.
+- It follows RoBERTa-style updates: byte-level BPE, packed token blocks, dynamic masking, and no NSP.
+- It does not implement original BERT sentence-pair NSP data generation, WordPiece tokenization, or token-type segment prediction.
+
+See [PRETRAINING_AUDIT.md](PRETRAINING_AUDIT.md) for the tokenization/training audit.
 
 ## What It Is Not
 

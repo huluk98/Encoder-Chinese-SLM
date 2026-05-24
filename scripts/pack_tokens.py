@@ -58,6 +58,72 @@ def write_buffer(handle, buffer: list[int], dtype) -> int:
     return written
 
 
+def packing_layout(config: dict[str, Any], data_config: dict[str, Any], tokenizer) -> tuple[int | None, int, int]:
+    add_cls = bool(data_config.get("add_cls", True))
+    cls_token_id = tokenizer.cls_token_id if add_cls else None
+    if add_cls and cls_token_id is None:
+        raise ValueError("data.add_cls is true, but the tokenizer does not define cls_token_id.")
+
+    block_size = int(config["model"]["block_size"])
+    payload_tokens_per_block = block_size - (1 if cls_token_id is not None else 0)
+    if payload_tokens_per_block < 1:
+        raise ValueError("model.block_size must leave room for at least one non-CLS token.")
+    return int(cls_token_id) if cls_token_id is not None else None, block_size, payload_tokens_per_block
+
+
+def count_packed_tokens(path: Path, dtype) -> int:
+    byte_size = path.stat().st_size
+    if byte_size % int(dtype.itemsize) != 0:
+        raise ValueError(f"Packed token file size is not divisible by dtype item size: {path}")
+    return byte_size // int(dtype.itemsize)
+
+
+def read_existing_rows(manifest_path: Path) -> int | None:
+    if not manifest_path.exists():
+        return None
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            rows = json.load(handle).get("rows")
+    except Exception:
+        return None
+    try:
+        return int(rows)
+    except (TypeError, ValueError):
+        return None
+
+
+def write_manifest(
+    manifest_path: Path,
+    output_path: Path,
+    dtype,
+    rows: int | None,
+    tokens: int,
+    block_size: int,
+    cls_token_id: int | None,
+    payload_tokens_per_block: int,
+    config: dict[str, Any],
+) -> None:
+    manifest = {
+        "output_path": str(output_path),
+        "manifest_path": str(manifest_path),
+        "dtype": dtype.name,
+        "rows": rows,
+        "tokens": tokens,
+        "block_size": block_size,
+        "add_cls": bool(cls_token_id is not None),
+        "cls_token_id": cls_token_id,
+        "payload_tokens_per_block": payload_tokens_per_block,
+        "full_blocks": tokens // payload_tokens_per_block,
+        "dropped_remainder_tokens_per_epoch": tokens % payload_tokens_per_block,
+        "tokenizer_path": str(config["tokenizer"]["path"]),
+        "config_path": str(config["_config_path"]),
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pack normalized text into a memory-mapped token id binary.")
     parser.add_argument("--config", default="configs/h20_8gpu_bert_0p2b_deepspeed.yaml", help="Path to a YAML config.")
@@ -78,17 +144,31 @@ def main() -> None:
     dtype = resolve_dtype(dtype_name, tokenizer_size=len(tokenizer))
     output_path = Path(args.output).expanduser() if args.output else default_output_path(config, dtype.name)
     manifest_path = Path(config["data"].get("token_ids_manifest_path") or f"{output_path}.manifest.json").expanduser()
+    data_config = preprocessed_data_config(config)
+    cls_token_id, block_size, payload_tokens_per_block = packing_layout(config, data_config, tokenizer)
 
     if output_path.exists() and not args.force:
+        tokens = count_packed_tokens(output_path, dtype)
+        write_manifest(
+            manifest_path=manifest_path,
+            output_path=output_path,
+            dtype=dtype,
+            rows=read_existing_rows(manifest_path),
+            tokens=tokens,
+            block_size=block_size,
+            cls_token_id=cls_token_id,
+            payload_tokens_per_block=payload_tokens_per_block,
+            config=config,
+        )
         print(f"Packed token ids already exist: {output_path}")
-        print("Use --force to rebuild them.")
+        print(f"Refreshed manifest for {block_size}-token blocks with {payload_tokens_per_block} payload tokens.")
+        print("Use --force to rebuild the token file.")
         return
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
 
-    data_config = preprocessed_data_config(config)
     texts = iter_texts(data_config)
     if args.max_samples is not None:
         texts = islice(texts, int(args.max_samples))
@@ -113,27 +193,24 @@ def main() -> None:
         tokens += write_buffer(handle, buffer, dtype)
 
     tmp_path.replace(output_path)
-    block_size = int(config["model"]["block_size"])
-    manifest = {
-        "output_path": str(output_path),
-        "manifest_path": str(manifest_path),
-        "dtype": dtype.name,
-        "rows": rows,
-        "tokens": tokens,
-        "block_size": block_size,
-        "full_blocks": tokens // block_size,
-        "dropped_remainder_tokens_per_epoch": tokens % block_size,
-        "tokenizer_path": str(config["tokenizer"]["path"]),
-        "config_path": str(config["_config_path"]),
-    }
-    with manifest_path.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
+    write_manifest(
+        manifest_path=manifest_path,
+        output_path=output_path,
+        dtype=dtype,
+        rows=rows,
+        tokens=tokens,
+        block_size=block_size,
+        cls_token_id=cls_token_id,
+        payload_tokens_per_block=payload_tokens_per_block,
+        config=config,
+    )
 
     print(f"Packed token ids: {output_path}")
     print(f"Rows: {rows:,}")
     print(f"Tokens: {tokens:,}")
-    print(f"Full {block_size}-token blocks: {tokens // block_size:,}")
+    print(f"Full {block_size}-token blocks: {tokens // payload_tokens_per_block:,}")
+    if cls_token_id is not None:
+        print(f"Training will prepend CLS token id {int(cls_token_id)} to each block.")
     print(f"Manifest: {manifest_path}")
 
 
