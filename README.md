@@ -79,6 +79,67 @@ Set `RUN_CEVAL_AFTER_TRAIN=0` if you want to train first and run C-Eval manually
 
 The pipeline skips an already-created tokenizer and packed token file by default. Use `FORCE_TOKENIZER=1` or `FORCE_PACK=1` only when you intentionally want to rebuild those artifacts.
 
+## Fast 0.194B Check
+
+Run this before launching a fresh H20 training job to confirm the config creates the intended 0.194B encoder:
+
+```bash
+git pull
+PYTHONPATH=src python - <<'PY'
+from chatlm_encoder.config import load_config
+from chatlm_encoder.model import count_parameters, create_model
+from chatlm_encoder.tokenizer import load_tokenizer
+
+cfg = load_config("configs/h20_8gpu_bert_0p2b_deepspeed.yaml")
+tok = load_tokenizer(cfg["tokenizer"]["path"])
+model = create_model(cfg["model"], tok)
+
+print("tokenizer_size:", len(tok))
+print("layers:", model.config.num_hidden_layers)
+print("hidden_size:", model.config.hidden_size)
+print("heads:", model.config.num_attention_heads)
+print("intermediate:", model.config.intermediate_size)
+print("vocab_size:", model.config.vocab_size)
+print("parameters:", f"{count_parameters(model):,}")
+PY
+```
+
+Expected:
+
+```text
+tokenizer_size: 29298
+layers: 24
+hidden_size: 768
+heads: 12
+intermediate: 3072
+vocab_size: 29298
+parameters: 193,700,466
+```
+
+If an older-size run already exists, move it aside and start a fresh run without `--resume`:
+
+```bash
+mv runs/h20-8gpu-bert-0p2b-mlm-deepspeed "runs/old-wrong-size-run-$(date +%Y%m%d-%H%M%S)"
+PACK_TOKENS=0 ./scripts/launch_h20_8gpu.sh
+```
+
+The startup log should print `Parameters: 193,700,466`. After the first checkpoint, confirm the saved model shape:
+
+```bash
+python - <<'PY'
+import json
+p = "runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest/config.json"
+cfg = json.load(open(p, encoding="utf-8"))
+print(cfg["num_hidden_layers"], cfg["hidden_size"], cfg["num_attention_heads"], cfg["intermediate_size"], cfg["vocab_size"])
+PY
+```
+
+Expected:
+
+```text
+24 768 12 3072 29298
+```
+
 ## Smoke Run
 
 ```bash
