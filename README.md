@@ -203,6 +203,54 @@ eval_results/scenic_sft/comparison/comparison_summary.csv
 eval_results/scenic_sft/comparison/comparison_groups.csv
 ```
 
+### 50% SCENIC SFT pruning and outcomes
+
+After both SCENIC SFT checkpoints exist, run the pruning-and-evaluation launcher:
+
+```bash
+./scripts/prune_scenic_sft_50_eval.sh
+```
+
+This creates two separate 50% sparse pruned checkpoints:
+
+```text
+runs/scenic-sft-training-dataset-pruned50
+runs/scenic-sft-contrastive-dataset-pruned50
+```
+
+By default, pruning is unstructured magnitude pruning over encoder transformer linear weights. It leaves token embeddings, LayerNorm/bias tensors, and the response classifier unchanged. The checkpoint files are not expected to become 50% smaller unless you use sparse storage or sparse inference kernels later; the script reports the real zero-rate in each `prune_summary.json`.
+
+The launcher evaluates the pruned models on:
+
+- the 200-row SCENIC benchmark: `data/scenic/iot_instruction_benchmark_200.json`
+- the original training source for the training-dataset model: `data/scenic/SCENIC_full_training_dataset.json`
+- the original anchor source for the contrastive model: `data/scenic/SCENIC_full_anchor_positive_negative.json`
+
+Outcome files:
+
+```text
+runs/scenic-sft-training-dataset-pruned50/prune_summary.json
+runs/scenic-sft-contrastive-dataset-pruned50/prune_summary.json
+eval_results/scenic_sft/pruned50_comparison/comparison_summary.csv
+eval_results/scenic_sft/pruned50_comparison/comparison_groups.csv
+```
+
+Use `comparison_summary.csv` for the main table. The `benchmark_200` rows are the SCENIC benchmark outcomes. The `training_dataset_retention` and `contrastive_anchor_retention` rows are the original-data retention outcomes.
+
+Useful overrides:
+
+```bash
+SPARSITY=0.5 PRUNE_SCOPE=encoder-linear ./scripts/prune_scenic_sft_50_eval.sh
+EVAL_DTYPE=fp32 BATCH_SIZE=64 ./scripts/prune_scenic_sft_50_eval.sh
+BENCHMARK_JSON=/path/to/benchmark.json ./scripts/prune_scenic_sft_50_eval.sh
+```
+
+If you want 50% sparsity over every matrix weight, including embeddings, use:
+
+```bash
+PRUNE_SCOPE=all-matrix ./scripts/prune_scenic_sft_50_eval.sh
+```
+
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
 
 ```bash
