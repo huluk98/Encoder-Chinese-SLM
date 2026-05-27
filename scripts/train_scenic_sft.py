@@ -104,6 +104,12 @@ def autocast_for(device: torch.device, precision: str):
     return nullcontext()
 
 
+def ensure_token_type_ids(encoded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if "token_type_ids" not in encoded:
+        encoded["token_type_ids"] = torch.zeros_like(encoded["input_ids"])
+    return encoded
+
+
 def lr_for_step(step: int, total_steps: int, config: dict[str, Any]) -> float:
     max_lr = float(config.get("learning_rate", 2e-5))
     min_lr = float(config.get("min_learning_rate", max_lr * 0.1))
@@ -126,6 +132,7 @@ def collate_prompt_response(tokenizer: Any, max_length: int):
             max_length=max_length,
             return_tensors="pt",
         )
+        encoded = ensure_token_type_ids(dict(encoded))
         return {"tokens": encoded, "labels": torch.tensor(labels, dtype=torch.long)}
 
     return _collate
@@ -139,6 +146,7 @@ def collate_contrastive(tokenizer: Any, max_length: int):
         invalid_negatives = [item.get("invalid_negative", item["negative"]) for item in batch]
         texts = anchors + positives + negatives + invalid_negatives
         encoded = tokenizer(texts, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
+        encoded = ensure_token_type_ids(dict(encoded))
         return {
             "tokens": encoded,
             "batch_size": len(batch),
@@ -231,7 +239,12 @@ def main() -> None:
     )
     model.to(device)
     if world_size > 1:
-        model = DistributedDataParallel(model, device_ids=[device.index], output_device=device.index)
+        model = DistributedDataParallel(
+            model,
+            device_ids=[device.index],
+            output_device=device.index,
+            broadcast_buffers=False,
+        )
 
     max_length = int(data_config.get("max_length", 128))
     train_dataset = PromptResponseDataset(rows, response_to_label)
