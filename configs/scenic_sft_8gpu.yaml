@@ -8,8 +8,8 @@ model:
   dropout: 0.1
 
 data:
-  train_json: "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json"
-  contrastive_json: "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_anchor_positive_negative.json"
+  train_json: data/scenic/SCENIC_full_training_dataset.json
+  contrastive_json: data/scenic/SCENIC_full_anchor_positive_negative.json
   max_length: 128
 
 train:

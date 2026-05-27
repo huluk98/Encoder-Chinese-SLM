@@ -18,7 +18,7 @@ from chatlm_encoder.scenic_sft import load_scenic_checkpoint, prompt_from_row, r
 
 
 # Edit these paths if you want to run the evaluator without command-line flags.
-LOCAL_JSON_PATH = "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json"
+LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
 CHECKPOINT_DIR = "runs/scenic-sft/latest"
 OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
 MAX_LENGTH = 128

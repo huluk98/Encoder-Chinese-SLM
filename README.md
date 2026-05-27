@@ -144,10 +144,10 @@ Expected:
 
 This is encoder-only supervised fine-tuning, so it trains a prompt-to-response **classifier** rather than a generative decoder. It uses:
 
-- `/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json` for prompt -> response labels.
-- `/Users/luke/Documents/SCENIC agent/data/SCENIC_full_anchor_positive_negative.json` for an auxiliary anchor/positive/negative contrastive loss.
+- `data/scenic/SCENIC_full_training_dataset.json` for prompt -> response labels.
+- `data/scenic/SCENIC_full_anchor_positive_negative.json` for an auxiliary anchor/positive/negative contrastive loss.
 
-Edit the paths in `configs/scenic_sft_8gpu.yaml` if the files live somewhere else on the training host. Then launch on the 8-GPU H20 box:
+These SCENIC JSON files are tracked in this repo, so `git pull` brings them down with the SFT scripts. Launch on the 8-GPU H20 box:
 
 ```bash
 ./scripts/launch_scenic_sft_8gpu.sh
@@ -174,7 +174,7 @@ python scripts/eval_scenic_sft_local.py
 For no-flag usage, edit these constants at the top of `scripts/eval_scenic_sft_local.py`:
 
 ```python
-LOCAL_JSON_PATH = "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json"
+LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
 CHECKPOINT_DIR = "runs/scenic-sft/latest"
 OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
 ```
