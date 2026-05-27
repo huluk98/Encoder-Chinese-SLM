@@ -67,14 +67,21 @@ def batched(items: list[dict[str, Any]], batch_size: int):
 
 
 def new_metric_bucket() -> dict[str, int]:
-    return {"rows": 0, "scored_rows": 0, "exact_match_correct": 0, "top5_correct": 0}
+    return {
+        "rows": 0,
+        "scored_rows": 0,
+        "expected_in_label_space": 0,
+        "exact_match_correct": 0,
+        "top5_correct": 0,
+    }
 
 
-def update_metric_bucket(bucket: dict[str, int], expected: str, predicted: str, top5: set[str]) -> None:
+def update_metric_bucket(bucket: dict[str, int], expected: str, predicted: str, top5: set[str], label_set: set[str]) -> None:
     bucket["rows"] += 1
     if not expected:
         return
     bucket["scored_rows"] += 1
+    bucket["expected_in_label_space"] += int(expected in label_set)
     bucket["exact_match_correct"] += int(predicted == expected)
     bucket["top5_correct"] += int(expected in top5)
 
@@ -83,6 +90,7 @@ def summarize_bucket(bucket: dict[str, int]) -> dict[str, int | float | None]:
     scored = int(bucket["scored_rows"])
     return {
         **bucket,
+        "label_space_coverage": bucket["expected_in_label_space"] / scored if scored else None,
         "exact_match_accuracy": bucket["exact_match_correct"] / scored if scored else None,
         "top5_accuracy": bucket["top5_correct"] / scored if scored else None,
     }
@@ -104,6 +112,7 @@ def main() -> None:
     eval_dtype = resolve_eval_dtype(args.dtype, device)
     model.to(device=device, dtype=eval_dtype)
     model.eval()
+    label_set = set(label2response)
     rows = load_eval_rows(args.json)
     output_path = Path(args.output).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +121,7 @@ def main() -> None:
     scored = 0
     correct = 0
     top5_correct = 0
+    expected_in_label_space = 0
     grouped_metrics: dict[str, defaultdict[str, dict[str, int]]] = {
         field: defaultdict(new_metric_bucket) for field in GROUP_FIELDS
     }
@@ -138,10 +148,12 @@ def main() -> None:
                 predicted = label2response[int(top_ids[0])]
                 expected = item["expected_response"]
                 top5_responses = {label2response[int(label_id)] for label_id in top_ids}
+                expected_covered = bool(expected and expected in label_set)
                 result = {
                     "index": item["index"],
                     "prompt": item["prompt"],
                     "expected_response": expected,
+                    "expected_in_label_space": expected_covered,
                     "predicted_response": predicted,
                     "correct": bool(expected and predicted == expected),
                     "top5": [
@@ -156,12 +168,13 @@ def main() -> None:
                 total += 1
                 if expected:
                     scored += 1
+                    expected_in_label_space += int(expected_covered)
                     correct += int(predicted == expected)
                     top5_correct += int(expected in top5_responses)
                 for field, buckets in grouped_metrics.items():
                     value = item["raw"].get(field)
                     if value is not None and str(value).strip():
-                        update_metric_bucket(buckets[str(value)], expected, predicted, top5_responses)
+                        update_metric_bucket(buckets[str(value)], expected, predicted, top5_responses, label_set)
 
     summary = {
         "checkpoint": str(args.checkpoint),
@@ -171,6 +184,8 @@ def main() -> None:
         "predictions_output": str(output_path),
         "rows": total,
         "scored_rows": scored,
+        "expected_in_label_space": expected_in_label_space,
+        "label_space_coverage": expected_in_label_space / scored if scored else None,
         "exact_match_correct": correct,
         "exact_match_accuracy": correct / scored if scored else None,
         "top5_correct": top5_correct,
@@ -196,6 +211,7 @@ def main() -> None:
     print(f"summary_output: {summary_path}")
     print(f"rows: {total:,}")
     if scored:
+        print(f"label_space_coverage: {expected_in_label_space / scored:.6f} ({expected_in_label_space:,}/{scored:,})")
         print(f"exact_accuracy: {correct / scored:.6f} ({correct:,}/{scored:,})")
         print(f"top5_accuracy: {top5_correct / scored:.6f} ({top5_correct:,}/{scored:,})")
     else:

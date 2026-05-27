@@ -182,6 +182,27 @@ By default this evaluates on the 200-row SCENIC IoT benchmark:
 data/scenic/iot_instruction_benchmark_200.json
 ```
 
+Run the full comparison suite:
+
+```bash
+python scripts/eval_scenic_sft_comparison.py
+```
+
+This runs four evaluations:
+
+- training-dataset model on the 200-row benchmark
+- training-dataset model on `SCENIC_full_training_dataset.json` for retention
+- contrastive-dataset model on the 200-row benchmark
+- contrastive-dataset model on `SCENIC_full_anchor_positive_negative.json` for retention, using only `anchor` as the input prompt
+
+The suite writes:
+
+```text
+eval_results/scenic_sft/comparison/comparison_summary.json
+eval_results/scenic_sft/comparison/comparison_summary.csv
+eval_results/scenic_sft/comparison/comparison_groups.csv
+```
+
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
 
 ```bash
@@ -220,7 +241,7 @@ SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_summary.json"
 EVAL_DTYPE = "auto"
 ```
 
-The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy` plus grouped accuracy by `difficulty`, `task_type`, and `source` when those fields exist.
+The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, label-space coverage, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy` plus grouped accuracy by `difficulty`, `task_type`, and `source` when those fields exist.
 
 ## Smoke Run
 
