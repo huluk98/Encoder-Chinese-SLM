@@ -79,9 +79,7 @@ class ScenicEncoderForResponseSelection(nn.Module):
         self.classifier = nn.Linear(hidden_size, int(num_labels))
 
     def pooled_output(self, outputs: Any) -> torch.Tensor:
-        pooler_output = getattr(outputs, "pooler_output", None)
-        if pooler_output is not None:
-            return pooler_output
+        # MLM pretraining does not train BERT's optional pooler, so use CLS directly.
         return outputs.last_hidden_state[:, 0]
 
     def encode(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -110,10 +108,17 @@ def load_base_scenic_model(
     tokenizer_source = str(Path(tokenizer_path).expanduser()) if tokenizer_path else str(Path(base_model).expanduser())
     model_source = str(Path(base_model).expanduser())
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=True)
-    encoder = AutoModel.from_pretrained(model_source)
+    encoder = load_encoder_without_pooler(model_source)
     if len(tokenizer) != int(encoder.config.vocab_size):
         encoder.resize_token_embeddings(len(tokenizer))
     return ScenicEncoderForResponseSelection(encoder, num_labels=num_labels, dropout=dropout), tokenizer
+
+
+def load_encoder_without_pooler(model_source: str) -> nn.Module:
+    try:
+        return AutoModel.from_pretrained(model_source, add_pooling_layer=False)
+    except TypeError:
+        return AutoModel.from_pretrained(model_source)
 
 
 def save_scenic_checkpoint(
@@ -156,7 +161,7 @@ def load_scenic_checkpoint(
     label2response = json.loads((checkpoint_path / "label2response.json").read_text(encoding="utf-8"))
     classifier_state = torch.load(checkpoint_path / "classifier.pt", map_location="cpu")
     tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_path), use_fast=True)
-    encoder = AutoModel.from_pretrained(str(checkpoint_path))
+    encoder = load_encoder_without_pooler(str(checkpoint_path))
     model = ScenicEncoderForResponseSelection(
         encoder,
         num_labels=int(classifier_state.get("num_labels", len(label2response))),
