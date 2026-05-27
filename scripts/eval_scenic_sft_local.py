@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +19,13 @@ from chatlm_encoder.scenic_sft import load_scenic_checkpoint, prompt_from_row, r
 
 
 # Edit these paths if you want to run the evaluator without command-line flags.
-LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
+LOCAL_JSON_PATH = "data/scenic/iot_instruction_benchmark_200.json"
 CHECKPOINT_DIR = "runs/scenic-sft-training-dataset/latest"
-OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_predictions.jsonl"
-SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_summary.json"
+OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_summary.json"
 MAX_LENGTH = 128
 BATCH_SIZE = 128
+GROUP_FIELDS = ("difficulty", "task_type", "source")
 
 
 def select_device() -> torch.device:
@@ -50,6 +52,28 @@ def batched(items: list[dict[str, Any]], batch_size: int):
         yield items[start : start + batch_size]
 
 
+def new_metric_bucket() -> dict[str, int]:
+    return {"rows": 0, "scored_rows": 0, "exact_match_correct": 0, "top5_correct": 0}
+
+
+def update_metric_bucket(bucket: dict[str, int], expected: str, predicted: str, top5: set[str]) -> None:
+    bucket["rows"] += 1
+    if not expected:
+        return
+    bucket["scored_rows"] += 1
+    bucket["exact_match_correct"] += int(predicted == expected)
+    bucket["top5_correct"] += int(expected in top5)
+
+
+def summarize_bucket(bucket: dict[str, int]) -> dict[str, int | float | None]:
+    scored = int(bucket["scored_rows"])
+    return {
+        **bucket,
+        "exact_match_accuracy": bucket["exact_match_correct"] / scored if scored else None,
+        "top5_accuracy": bucket["top5_correct"] / scored if scored else None,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a SCENIC encoder SFT checkpoint on a local JSON file.")
     parser.add_argument("--json", default=LOCAL_JSON_PATH, help="Local JSON list with prompt/response or anchor/response rows.")
@@ -70,6 +94,9 @@ def main() -> None:
     scored = 0
     correct = 0
     top5_correct = 0
+    grouped_metrics: dict[str, defaultdict[str, dict[str, int]]] = {
+        field: defaultdict(new_metric_bucket) for field in GROUP_FIELDS
+    }
 
     batch_count = math.ceil(len(rows) / int(args.batch_size)) if rows else 0
     with output_path.open("w", encoding="utf-8") as handle, torch.no_grad():
@@ -92,6 +119,7 @@ def main() -> None:
             for item, top_ids, top_probs in zip(batch, top_indices_list, probabilities):
                 predicted = label2response[int(top_ids[0])]
                 expected = item["expected_response"]
+                top5_responses = {label2response[int(label_id)] for label_id in top_ids}
                 result = {
                     "index": item["index"],
                     "prompt": item["prompt"],
@@ -103,12 +131,19 @@ def main() -> None:
                         for label_id, score in zip(top_ids, top_probs)
                     ],
                 }
+                for field in ("id", "difficulty", "task_type", "source", "response_action_count", "device_term_count"):
+                    if field in item["raw"]:
+                        result[field] = item["raw"][field]
                 handle.write(json.dumps(result, ensure_ascii=False) + "\n")
                 total += 1
                 if expected:
                     scored += 1
                     correct += int(predicted == expected)
-                    top5_correct += int(expected in {label2response[int(label_id)] for label_id in top_ids})
+                    top5_correct += int(expected in top5_responses)
+                for field, buckets in grouped_metrics.items():
+                    value = item["raw"].get(field)
+                    if value is not None and str(value).strip():
+                        update_metric_bucket(buckets[str(value)], expected, predicted, top5_responses)
 
     summary = {
         "checkpoint": str(args.checkpoint),
@@ -120,6 +155,14 @@ def main() -> None:
         "exact_match_accuracy": correct / scored if scored else None,
         "top5_correct": top5_correct,
         "top5_accuracy": top5_correct / scored if scored else None,
+        "groups": {
+            field: {
+                value: summarize_bucket(bucket)
+                for value, bucket in sorted(buckets.items(), key=lambda item: item[0])
+            }
+            for field, buckets in grouped_metrics.items()
+            if buckets
+        },
     }
     summary_path = Path(args.summary_output).expanduser()
     summary_path.parent.mkdir(parents=True, exist_ok=True)

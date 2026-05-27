@@ -176,17 +176,23 @@ Evaluate a local SCENIC-style JSON file:
 python scripts/eval_scenic_sft_local.py
 ```
 
+By default this evaluates on the 200-row SCENIC IoT benchmark:
+
+```text
+data/scenic/iot_instruction_benchmark_200.json
+```
+
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
 
 ```bash
 python scripts/eval_scenic_sft_local.py \
-  --json data/scenic/SCENIC_full_training_dataset.json \
+  --json data/scenic/iot_instruction_benchmark_200.json \
   --checkpoint runs/scenic-sft-training-dataset/latest \
   --output eval_results/scenic_sft/training_dataset_predictions.jsonl \
   --summary-output eval_results/scenic_sft/training_dataset_summary.json
 
 python scripts/eval_scenic_sft_local.py \
-  --json data/scenic/SCENIC_full_training_dataset.json \
+  --json data/scenic/iot_instruction_benchmark_200.json \
   --checkpoint runs/scenic-sft-contrastive-dataset/latest \
   --output eval_results/scenic_sft/contrastive_dataset_predictions.jsonl \
   --summary-output eval_results/scenic_sft/contrastive_dataset_summary.json
@@ -205,13 +211,13 @@ python scripts/eval_scenic_sft_local.py \
 For no-flag usage, edit these constants at the top of `scripts/eval_scenic_sft_local.py`:
 
 ```python
-LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
+LOCAL_JSON_PATH = "data/scenic/iot_instruction_benchmark_200.json"
 CHECKPOINT_DIR = "runs/scenic-sft-training-dataset/latest"
-OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_predictions.jsonl"
-SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_summary.json"
+OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_summary.json"
 ```
 
-The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy`.
+The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy` plus grouped accuracy by `difficulty`, `task_type`, and `source` when those fields exist.
 
 ## Smoke Run
 
