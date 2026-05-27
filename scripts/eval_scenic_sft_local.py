@@ -21,6 +21,7 @@ from chatlm_encoder.scenic_sft import load_scenic_checkpoint, prompt_from_row, r
 LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
 CHECKPOINT_DIR = "runs/scenic-sft/latest"
 OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/local_eval_summary.json"
 MAX_LENGTH = 128
 BATCH_SIZE = 128
 
@@ -54,6 +55,7 @@ def main() -> None:
     parser.add_argument("--json", default=LOCAL_JSON_PATH, help="Local JSON list with prompt/response or anchor/response rows.")
     parser.add_argument("--checkpoint", default=CHECKPOINT_DIR, help="SCENIC SFT checkpoint directory.")
     parser.add_argument("--output", default=OUTPUT_PATH, help="Prediction JSONL output path.")
+    parser.add_argument("--summary-output", default=SUMMARY_OUTPUT_PATH, help="Summary JSON output path.")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--max-length", type=int, default=MAX_LENGTH)
     args = parser.parse_args()
@@ -108,9 +110,25 @@ def main() -> None:
                     correct += int(predicted == expected)
                     top5_correct += int(expected in {label2response[int(label_id)] for label_id in top_ids})
 
+    summary = {
+        "checkpoint": str(args.checkpoint),
+        "json": str(args.json),
+        "predictions_output": str(output_path),
+        "rows": total,
+        "scored_rows": scored,
+        "exact_match_correct": correct,
+        "exact_match_accuracy": correct / scored if scored else None,
+        "top5_correct": top5_correct,
+        "top5_accuracy": top5_correct / scored if scored else None,
+    }
+    summary_path = Path(args.summary_output).expanduser()
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     print(f"checkpoint: {args.checkpoint}")
     print(f"json: {args.json}")
     print(f"output: {output_path}")
+    print(f"summary_output: {summary_path}")
     print(f"rows: {total:,}")
     if scored:
         print(f"exact_accuracy: {correct / scored:.6f} ({correct:,}/{scored:,})")

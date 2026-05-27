@@ -211,7 +211,8 @@ def main() -> None:
 
     rows = load_prompt_response_rows(data_config["train_json"])
     response_to_label, label2response = build_label_maps(rows)
-    contrast_rows = load_contrastive_rows(data_config["contrastive_json"])
+    contrastive_json = data_config.get("contrastive_json")
+    contrast_rows = load_contrastive_rows(contrastive_json) if contrastive_json else []
     if is_main(rank):
         print(f"[scenic-sft] rows={len(rows):,} labels={len(label2response):,} contrastive_rows={len(contrast_rows):,}")
 

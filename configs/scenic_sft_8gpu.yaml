@@ -1,5 +1,7 @@
 run:
   seed: 42
+  # One combined SCENIC SFT model is saved here. The two JSON files below are inputs,
+  # not two separate output models. The newest checkpoint is runs/scenic-sft/latest.
   output_dir: runs/scenic-sft
 
 model:
@@ -8,7 +10,10 @@ model:
   dropout: 0.1
 
 data:
+  # Main supervised prompt -> response labels.
   train_json: data/scenic/SCENIC_full_training_dataset.json
+  # Auxiliary anchor/positive/negative contrastive supervision for the same model.
+  # Set this to null and train.contrastive_weight to 0.0 to disable contrastive SFT.
   contrastive_json: data/scenic/SCENIC_full_anchor_positive_negative.json
   max_length: 128
 

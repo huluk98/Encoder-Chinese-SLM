@@ -147,6 +147,8 @@ This is encoder-only supervised fine-tuning, so it trains a prompt-to-response *
 - `data/scenic/SCENIC_full_training_dataset.json` for prompt -> response labels.
 - `data/scenic/SCENIC_full_anchor_positive_negative.json` for an auxiliary anchor/positive/negative contrastive loss.
 
+These two datasets train one combined SFT model. They do not create two different models. The output path is controlled by `run.output_dir` in `configs/scenic_sft_8gpu.yaml`.
+
 These SCENIC JSON files are tracked in this repo, so `git pull` brings them down with the SFT scripts. Launch on the 8-GPU H20 box:
 
 ```bash
@@ -171,15 +173,26 @@ Evaluate a local SCENIC-style JSON file:
 python scripts/eval_scenic_sft_local.py
 ```
 
+Evaluate a different local JSON file and write an exact-match summary:
+
+```bash
+python scripts/eval_scenic_sft_local.py \
+  --json /path/to/eval.json \
+  --checkpoint runs/scenic-sft/latest \
+  --output eval_results/scenic_sft/eval_predictions.jsonl \
+  --summary-output eval_results/scenic_sft/eval_summary.json
+```
+
 For no-flag usage, edit these constants at the top of `scripts/eval_scenic_sft_local.py`:
 
 ```python
 LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
 CHECKPOINT_DIR = "runs/scenic-sft/latest"
 OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/local_eval_summary.json"
 ```
 
-The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It reports exact-response accuracy, top-5 accuracy, and writes per-row predictions.
+The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy`.
 
 ## Smoke Run
 
