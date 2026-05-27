@@ -1,0 +1,34 @@
+run:
+  seed: 42
+  output_dir: runs/scenic-sft
+
+model:
+  base_model: runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest
+  tokenizer_path: artifacts/tokenizer-chatlm-encoder-bpe-29298
+  dropout: 0.1
+
+data:
+  train_json: "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json"
+  contrastive_json: "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_anchor_positive_negative.json"
+  max_length: 128
+
+train:
+  epochs: 10
+  max_steps: null
+  batch_size: 64
+  contrastive_batch_size: 64
+  grad_accum_steps: 1
+  learning_rate: 0.00002
+  min_learning_rate: 0.000002
+  warmup_ratio: 0.06
+  weight_decay: 0.01
+  adam_eps: 0.00000001
+  max_grad_norm: 1.0
+  precision: bf16
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  contrastive_weight: 0.1
+  triplet_margin: 0.25
+  log_every: 10
+  save_every: 100

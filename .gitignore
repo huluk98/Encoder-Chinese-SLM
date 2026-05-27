@@ -8,6 +8,7 @@ __pycache__/
 artifacts/
 outputs/
 runs/
+eval_results/
 data/raw/
 data/processed/
 *.log

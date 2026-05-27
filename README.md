@@ -140,6 +140,47 @@ Expected:
 24 768 12 3072 29298
 ```
 
+## SCENIC Encoder SFT
+
+This is encoder-only supervised fine-tuning, so it trains a prompt-to-response **classifier** rather than a generative decoder. It uses:
+
+- `/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json` for prompt -> response labels.
+- `/Users/luke/Documents/SCENIC agent/data/SCENIC_full_anchor_positive_negative.json` for an auxiliary anchor/positive/negative contrastive loss.
+
+Edit the paths in `configs/scenic_sft_8gpu.yaml` if the files live somewhere else on the training host. Then launch on the 8-GPU H20 box:
+
+```bash
+./scripts/launch_scenic_sft_8gpu.sh
+```
+
+The trainer expects the MLM-pretrained encoder at:
+
+```text
+runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest
+```
+
+Set `model.base_model` in `configs/scenic_sft_8gpu.yaml` if your checkpoint path is different. The SFT checkpoint is written to:
+
+```text
+runs/scenic-sft/latest
+```
+
+Evaluate a local SCENIC-style JSON file:
+
+```bash
+python scripts/eval_scenic_sft_local.py
+```
+
+For no-flag usage, edit these constants at the top of `scripts/eval_scenic_sft_local.py`:
+
+```python
+LOCAL_JSON_PATH = "/Users/luke/Documents/SCENIC agent/data/SCENIC_full_training_dataset.json"
+CHECKPOINT_DIR = "runs/scenic-sft/latest"
+OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
+```
+
+The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It reports exact-response accuracy, top-5 accuracy, and writes per-row predictions.
+
 ## Smoke Run
 
 ```bash
