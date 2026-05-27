@@ -251,6 +251,31 @@ If you want 50% sparsity over every matrix weight, including embeddings, use:
 PRUNE_SCOPE=all-matrix ./scripts/prune_scenic_sft_50_eval.sh
 ```
 
+Run all pruning variants and aggregate the benchmark/original-data outcomes:
+
+```bash
+./scripts/prune_scenic_sft_all_methods_eval.sh
+```
+
+This runs:
+
+- `encoder-linear`: encoder transformer linear weights only, classifier kept dense
+- `all-linear-classifier`: all non-embedding 2D weights, including the response classifier
+- `all-matrix-classifier`: all matrix weights, including embeddings and the response classifier
+
+The combined table is written to:
+
+```text
+eval_results/scenic_sft/pruned50_all_methods/all_methods_summary.csv
+eval_results/scenic_sft/pruned50_all_methods/all_methods_summary.json
+```
+
+To run only selected methods:
+
+```bash
+METHODS=encoder-linear,all-matrix-classifier ./scripts/prune_scenic_sft_all_methods_eval.sh
+```
+
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
 
 ```bash
