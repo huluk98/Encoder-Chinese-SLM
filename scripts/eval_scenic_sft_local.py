@@ -19,9 +19,9 @@ from chatlm_encoder.scenic_sft import load_scenic_checkpoint, prompt_from_row, r
 
 # Edit these paths if you want to run the evaluator without command-line flags.
 LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
-CHECKPOINT_DIR = "runs/scenic-sft/latest"
-OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
-SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/local_eval_summary.json"
+CHECKPOINT_DIR = "runs/scenic-sft-training-dataset/latest"
+OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_summary.json"
 MAX_LENGTH = 128
 BATCH_SIZE = 128
 

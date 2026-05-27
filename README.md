@@ -142,30 +142,33 @@ Expected:
 
 ## SCENIC Encoder SFT
 
-This is encoder-only supervised fine-tuning, so it trains a prompt-to-response **classifier** rather than a generative decoder. It uses:
+This is encoder-only supervised fine-tuning, so it trains prompt-to-response **classifiers** rather than generative decoders. The two SCENIC datasets are trained into separate checkpoints for comparison tables:
 
-- `data/scenic/SCENIC_full_training_dataset.json` for prompt -> response labels.
-- `data/scenic/SCENIC_full_anchor_positive_negative.json` for an auxiliary anchor/positive/negative contrastive loss.
+- `data/scenic/SCENIC_full_training_dataset.json` -> `runs/scenic-sft-training-dataset/latest`
+- `data/scenic/SCENIC_full_anchor_positive_negative.json` -> `runs/scenic-sft-contrastive-dataset/latest`
 
-These two datasets train one combined SFT model. They do not create two different models. The output path is controlled by `run.output_dir` in `configs/scenic_sft_8gpu.yaml`.
+The contrastive-dataset model uses `anchor -> response` as the supervised task and also uses the positive/negative fields as an auxiliary contrastive loss.
 
-These SCENIC JSON files are tracked in this repo, so `git pull` brings them down with the SFT scripts. Launch on the 8-GPU H20 box:
+These SCENIC JSON files are tracked in this repo, so `git pull` brings them down with the SFT scripts. Train both models sequentially on the 8-GPU H20 box:
 
 ```bash
-./scripts/launch_scenic_sft_8gpu.sh
+./scripts/launch_scenic_sft_separate_8gpu.sh
 ```
 
-The trainer expects the MLM-pretrained encoder at:
+Or train one model at a time:
+
+```bash
+CONFIG=configs/scenic_sft_training_dataset_8gpu.yaml ./scripts/launch_scenic_sft_8gpu.sh
+CONFIG=configs/scenic_sft_contrastive_dataset_8gpu.yaml ./scripts/launch_scenic_sft_8gpu.sh
+```
+
+Both configs expect the MLM-pretrained encoder at:
 
 ```text
 runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest
 ```
 
-Set `model.base_model` in `configs/scenic_sft_8gpu.yaml` if your checkpoint path is different. The SFT checkpoint is written to:
-
-```text
-runs/scenic-sft/latest
-```
+Set `model.base_model` in each SCENIC SFT config if your checkpoint path is different. Change each model output path with `run.output_dir`.
 
 Evaluate a local SCENIC-style JSON file:
 
@@ -173,12 +176,28 @@ Evaluate a local SCENIC-style JSON file:
 python scripts/eval_scenic_sft_local.py
 ```
 
-Evaluate a different local JSON file and write an exact-match summary:
+Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
+
+```bash
+python scripts/eval_scenic_sft_local.py \
+  --json data/scenic/SCENIC_full_training_dataset.json \
+  --checkpoint runs/scenic-sft-training-dataset/latest \
+  --output eval_results/scenic_sft/training_dataset_predictions.jsonl \
+  --summary-output eval_results/scenic_sft/training_dataset_summary.json
+
+python scripts/eval_scenic_sft_local.py \
+  --json data/scenic/SCENIC_full_training_dataset.json \
+  --checkpoint runs/scenic-sft-contrastive-dataset/latest \
+  --output eval_results/scenic_sft/contrastive_dataset_predictions.jsonl \
+  --summary-output eval_results/scenic_sft/contrastive_dataset_summary.json
+```
+
+Evaluate a different local JSON file:
 
 ```bash
 python scripts/eval_scenic_sft_local.py \
   --json /path/to/eval.json \
-  --checkpoint runs/scenic-sft/latest \
+  --checkpoint runs/scenic-sft-training-dataset/latest \
   --output eval_results/scenic_sft/eval_predictions.jsonl \
   --summary-output eval_results/scenic_sft/eval_summary.json
 ```
@@ -187,9 +206,9 @@ For no-flag usage, edit these constants at the top of `scripts/eval_scenic_sft_l
 
 ```python
 LOCAL_JSON_PATH = "data/scenic/SCENIC_full_training_dataset.json"
-CHECKPOINT_DIR = "runs/scenic-sft/latest"
-OUTPUT_PATH = "eval_results/scenic_sft/local_eval_predictions.jsonl"
-SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/local_eval_summary.json"
+CHECKPOINT_DIR = "runs/scenic-sft-training-dataset/latest"
+OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/training_dataset_summary.json"
 ```
 
 The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy`.

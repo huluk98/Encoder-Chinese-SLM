@@ -1,8 +1,6 @@
 run:
   seed: 42
-  # Default SCENIC SFT: train only on the prompt -> response dataset.
-  # The newest checkpoint is runs/scenic-sft-training-dataset/latest.
-  output_dir: runs/scenic-sft-training-dataset
+  output_dir: runs/scenic-sft-contrastive-dataset
 
 model:
   base_model: runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest
@@ -10,10 +8,11 @@ model:
   dropout: 0.1
 
 data:
-  # Main supervised prompt -> response labels.
-  train_json: data/scenic/SCENIC_full_training_dataset.json
-  # Disabled here so this model is separate from the contrastive dataset model.
-  contrastive_json: null
+  # This JSON contains anchor/positive/negative rows plus response labels.
+  # The trainer uses anchor -> response as the supervised task.
+  train_json: data/scenic/SCENIC_full_anchor_positive_negative.json
+  # The same file also supplies anchor/positive/negative contrastive supervision.
+  contrastive_json: data/scenic/SCENIC_full_anchor_positive_negative.json
   max_length: 128
 
 train:
@@ -32,7 +31,7 @@ train:
   num_workers: 4
   pin_memory: true
   persistent_workers: true
-  contrastive_weight: 0.0
+  contrastive_weight: 0.1
   triplet_margin: 0.25
   log_every: 10
   save_every: 100

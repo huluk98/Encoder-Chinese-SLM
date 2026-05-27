@@ -1,7 +1,5 @@
 run:
   seed: 42
-  # Default SCENIC SFT: train only on the prompt -> response dataset.
-  # The newest checkpoint is runs/scenic-sft-training-dataset/latest.
   output_dir: runs/scenic-sft-training-dataset
 
 model:
@@ -10,9 +8,7 @@ model:
   dropout: 0.1
 
 data:
-  # Main supervised prompt -> response labels.
   train_json: data/scenic/SCENIC_full_training_dataset.json
-  # Disabled here so this model is separate from the contrastive dataset model.
   contrastive_json: null
   max_length: 128
 
