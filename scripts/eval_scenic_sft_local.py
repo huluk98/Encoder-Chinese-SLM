@@ -25,6 +25,7 @@ OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_predictions.jsonl"
 SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_summary.json"
 MAX_LENGTH = 128
 BATCH_SIZE = 128
+EVAL_DTYPE = "auto"
 GROUP_FIELDS = ("difficulty", "task_type", "source")
 
 
@@ -34,6 +35,19 @@ def select_device() -> torch.device:
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def resolve_eval_dtype(dtype_name: str, device: torch.device) -> torch.dtype:
+    dtype_name = str(dtype_name).lower()
+    if dtype_name == "auto":
+        return torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
+    if dtype_name in {"fp32", "float32"}:
+        return torch.float32
+    if dtype_name in {"bf16", "bfloat16"}:
+        if device.type != "cuda":
+            raise ValueError("--dtype bf16 is only supported for CUDA evaluation in this script.")
+        return torch.bfloat16
+    raise ValueError(f"Unknown dtype: {dtype_name}. Use auto, fp32, or bf16.")
 
 
 def load_eval_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -82,10 +96,14 @@ def main() -> None:
     parser.add_argument("--summary-output", default=SUMMARY_OUTPUT_PATH, help="Summary JSON output path.")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--max-length", type=int, default=MAX_LENGTH)
+    parser.add_argument("--dtype", default=EVAL_DTYPE, choices=("auto", "fp32", "bf16"), help="Model dtype for evaluation.")
     args = parser.parse_args()
 
     device = select_device()
     model, tokenizer, label2response = load_scenic_checkpoint(args.checkpoint, device=device)
+    eval_dtype = resolve_eval_dtype(args.dtype, device)
+    model.to(device=device, dtype=eval_dtype)
+    model.eval()
     rows = load_eval_rows(args.json)
     output_path = Path(args.output).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +166,8 @@ def main() -> None:
     summary = {
         "checkpoint": str(args.checkpoint),
         "json": str(args.json),
+        "device": str(device),
+        "dtype": str(eval_dtype).replace("torch.", ""),
         "predictions_output": str(output_path),
         "rows": total,
         "scored_rows": scored,
@@ -170,6 +190,8 @@ def main() -> None:
 
     print(f"checkpoint: {args.checkpoint}")
     print(f"json: {args.json}")
+    print(f"device: {device}")
+    print(f"dtype: {str(eval_dtype).replace('torch.', '')}")
     print(f"output: {output_path}")
     print(f"summary_output: {summary_path}")
     print(f"rows: {total:,}")
