@@ -286,6 +286,60 @@ To run only selected methods:
 METHODS=encoder-linear,all-matrix-classifier ./scripts/prune_scenic_sft_all_methods_eval.sh
 ```
 
+### Reference-style 50% pruning for T5 comparison
+
+For an apples-to-apples comparison with the reference T5 pruning scripts, first train the encoder SFT checkpoints:
+
+```bash
+./scripts/launch_scenic_sft_separate_8gpu.sh
+```
+
+Then run the reference-style 50% pruning suite:
+
+```bash
+./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+```
+
+If you prefer not to pass CLI flags, edit the path block at the top of:
+
+```text
+scripts/run_scenic_reference_pruning_local.py
+```
+
+Then run:
+
+```bash
+python scripts/run_scenic_reference_pruning_local.py
+```
+
+This runs three post-SFT pruning methods on both SCENIC SFT checkpoints:
+
+- `magnitude`: per-`nn.Linear` unstructured magnitude pruning
+- `nvidia_2_4`: NVIDIA-style 2:4 structured pruning, two zeros in every four input weights
+- `wanda`: WANDA pruning with calibration activations from the matching SCENIC JSON
+
+By default, this matches the T5 scripts' target surface: all `nn.Linear.weight` tensors, including the response classifier, with embeddings and LayerNorm/bias left dense. The pruned checkpoints are written under:
+
+```text
+runs/scenic-pruned50-reference-methods/
+```
+
+The combined comparison table is written to:
+
+```text
+eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.csv
+eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.json
+```
+
+Useful overrides:
+
+```bash
+METHODS=magnitude,nvidia,wanda ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+PRUNE_SCOPE=encoder-linear ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+INCLUDE_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+CALIBRATION_BATCHES=128 CALIBRATION_BATCH_SIZE=8 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+```
+
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
 
 ```bash
