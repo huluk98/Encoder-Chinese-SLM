@@ -198,6 +198,18 @@ Run the full comparison suite:
 python scripts/eval_scenic_sft_comparison.py
 ```
 
+If you prefer not to pass CLI flags, edit the path block at the top of:
+
+```text
+scripts/run_scenic_sft_eval_local.py
+```
+
+Then run:
+
+```bash
+python scripts/run_scenic_sft_eval_local.py
+```
+
 This runs four evaluations:
 
 - training-dataset model on the 200-row benchmark
