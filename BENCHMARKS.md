@@ -29,6 +29,22 @@ python scripts/eval_ceval.py \
   --device auto
 ```
 
+If the standard evaluator feels stuck, use the one-path batched runner. It avoids
+the Hugging Face config-name discovery step and writes partial results after each
+subject:
+
+```bash
+python scripts/eval_ceval_onepath.py runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest
+```
+
+Smoke test:
+
+```bash
+python scripts/eval_ceval_onepath.py runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest \
+  --subjects high_school_chinese \
+  --limit 10
+```
+
 This encoder-only evaluator uses **MLM cloze scoring**: it formats each C-Eval item as a Chinese multiple-choice question ending in `答案：`, masks the candidate answer token(s), and selects the A/B/C/D option with the highest masked-token log probability. This is appropriate for an encoder-only masked language model, but it is not the same scoring method as an autoregressive decoder-only C-Eval evaluation.
 
 ### Latest Result
