@@ -312,11 +312,12 @@ Then run:
 python scripts/run_scenic_reference_pruning_local.py
 ```
 
-This runs three post-SFT pruning methods on both SCENIC SFT checkpoints:
+This runs four post-SFT pruning methods on both SCENIC SFT checkpoints:
 
 - `magnitude`: per-`nn.Linear` unstructured magnitude pruning
 - `nvidia_2_4`: NVIDIA-style 2:4 structured pruning, two zeros in every four input weights
 - `wanda`: WANDA pruning with calibration activations from the matching SCENIC JSON
+- `gradient`: Taylor-style gradient pruning using `(weight * grad).abs()` over matching SCENIC calibration rows
 
 By default, this matches the T5 scripts' target surface: all `nn.Linear.weight` tensors, including the response classifier, with embeddings and LayerNorm/bias left dense. The pruned checkpoints are written under:
 
@@ -334,7 +335,7 @@ eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.jso
 Useful overrides:
 
 ```bash
-METHODS=magnitude,nvidia,wanda ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+METHODS=magnitude,nvidia,wanda,gradient ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 PRUNE_SCOPE=encoder-linear ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 INCLUDE_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 CALIBRATION_BATCHES=128 CALIBRATION_BATCH_SIZE=8 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh

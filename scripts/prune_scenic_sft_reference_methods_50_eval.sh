@@ -3,7 +3,7 @@ set -euo pipefail
 
 export PYTHONUNBUFFERED=1
 
-METHODS="${METHODS:-magnitude,nvidia,wanda}"
+METHODS="${METHODS:-magnitude,nvidia,wanda,gradient}"
 SPARSITY="${SPARSITY:-0.5}"
 PRUNE_SCOPE="${PRUNE_SCOPE:-all-linear}"
 RUN_ROOT="${RUN_ROOT:-runs/scenic-pruned50-reference-methods}"
@@ -61,9 +61,13 @@ for raw_method in "${method_names[@]}"; do
     wanda)
       label="wanda"
       ;;
+    gradient|taylor)
+      method="gradient"
+      label="gradient"
+      ;;
     *)
       echo "[reference-prune] unknown method: $method" >&2
-      echo "Known methods: magnitude, nvidia, wanda" >&2
+      echo "Known methods: magnitude, nvidia, wanda, gradient" >&2
       exit 2
       ;;
   esac

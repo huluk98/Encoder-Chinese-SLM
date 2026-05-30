@@ -12,8 +12,9 @@ from pathlib import Path
 # EDIT THESE PATHS AND SETTINGS
 # =============================================================================
 
-# Which pruning methods to run. Use any subset of: "magnitude", "nvidia", "wanda".
-METHODS = ("magnitude", "nvidia", "wanda")
+# Which pruning methods to run. Use any subset of:
+# "magnitude", "nvidia", "wanda", "gradient".
+METHODS = ("magnitude", "nvidia", "wanda", "gradient")
 
 # SFT checkpoints created by:
 #   ./scripts/launch_scenic_sft_separate_8gpu.sh
@@ -71,7 +72,9 @@ def method_label(method: str) -> tuple[str, str]:
         return "nvidia", "nvidia_2_4"
     if normalized == "wanda":
         return "wanda", "wanda"
-    raise ValueError(f"Unknown method {method!r}. Use magnitude, nvidia, or wanda.")
+    if normalized in {"gradient", "taylor"}:
+        return "gradient", "gradient"
+    raise ValueError(f"Unknown method {method!r}. Use magnitude, nvidia, wanda, or gradient.")
 
 
 def prune_args(

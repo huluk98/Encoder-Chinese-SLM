@@ -36,12 +36,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Prune a SCENIC encoder SFT checkpoint with reference T5-style methods: "
-            "unstructured magnitude, NVIDIA 2:4, or WANDA."
+            "unstructured magnitude, NVIDIA 2:4, WANDA, or gradient/Taylor pruning."
         )
     )
     parser.add_argument("--checkpoint", default=CHECKPOINT_DIR, help="Input SCENIC SFT checkpoint directory.")
     parser.add_argument("--output", default=OUTPUT_DIR, help="Output directory for the pruned checkpoint.")
-    parser.add_argument("--method", required=True, choices=("magnitude", "nvidia", "wanda"))
+    parser.add_argument("--method", required=True, choices=("magnitude", "nvidia", "wanda", "gradient"))
     parser.add_argument("--sparsity", type=float, default=SPARSITY, help="Target sparsity. NVIDIA requires 0.5.")
     parser.add_argument(
         "--scope",
@@ -179,6 +179,19 @@ def calibration_texts(path: str | Path) -> list[str]:
     return texts
 
 
+def calibration_prompt_label_rows(path: str | Path, label2response: list[str]) -> list[tuple[str, int]]:
+    response_to_label = {response: index for index, response in enumerate(label2response)}
+    rows: list[tuple[str, int]] = []
+    for row in read_json_list(path):
+        prompt = prompt_from_row(row)
+        response = "" if row.get("response") is None else str(row.get("response")).strip()
+        if prompt and response in response_to_label:
+            rows.append((prompt, response_to_label[response]))
+    if not rows:
+        raise ValueError(f"No prompt/response rows matching checkpoint labels found in calibration JSON: {path}")
+    return rows
+
+
 def ensure_token_type_ids(encoded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     if "token_type_ids" not in encoded:
         encoded["token_type_ids"] = torch.zeros_like(encoded["input_ids"])
@@ -250,6 +263,46 @@ def collect_activation_norms(
     return norms
 
 
+def collect_gradient_saliency(
+    model: nn.Module,
+    tokenizer: Any,
+    modules: list[tuple[str, nn.Linear]],
+    rows: list[tuple[str, int]],
+    device: torch.device,
+    max_length: int,
+    batch_size: int,
+    calibration_batches: int,
+) -> dict[str, torch.Tensor]:
+    saliency = {name: torch.zeros_like(module.weight.data, dtype=torch.float32) for name, module in modules}
+    model.train()
+    used_batches = 0
+    for start in tqdm(range(0, len(rows), batch_size), desc="gradient calibration", unit="batch"):
+        if used_batches >= calibration_batches:
+            break
+        batch_rows = rows[start : start + batch_size]
+        prompts = [item[0] for item in batch_rows]
+        labels = torch.tensor([item[1] for item in batch_rows], dtype=torch.long, device=device)
+        encoded = tokenizer(
+            prompts,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        encoded = ensure_token_type_ids(dict(encoded))
+        output = model(move_batch(encoded, device), labels=labels)
+        output["loss"].backward()
+
+        for name, module in modules:
+            if module.weight.grad is not None:
+                saliency[name].add_((module.weight.detach().float() * module.weight.grad.detach().float()).abs())
+        model.zero_grad(set_to_none=True)
+        used_batches += 1
+
+    model.eval()
+    return saliency
+
+
 def wanda_prune_(module: nn.Linear, activation_norm: torch.Tensor, sparsity: float) -> str | None:
     weight = module.weight.data
     if activation_norm.numel() != weight.shape[1]:
@@ -264,6 +317,23 @@ def wanda_prune_(module: nn.Linear, activation_norm: torch.Tensor, sparsity: flo
     keep_indices = torch.topk(score, keep_count, dim=1).indices
     mask = torch.zeros_like(weight, dtype=torch.bool)
     mask.scatter_(1, keep_indices, True)
+    weight.mul_(mask)
+    return None
+
+
+def gradient_prune_(module: nn.Linear, saliency: torch.Tensor, sparsity: float) -> str | None:
+    weight = module.weight.data
+    if saliency.shape != weight.shape:
+        return f"saliency shape {list(saliency.shape)} does not match weight shape {list(weight.shape)}"
+    scores = saliency.reshape(-1)
+    keep_count = int(scores.numel() * (1.0 - sparsity))
+    if keep_count <= 0:
+        weight.zero_()
+        return None
+    if keep_count >= scores.numel():
+        return None
+    threshold = torch.topk(scores, keep_count).values.min().to(weight.device)
+    mask = saliency.to(weight.device) >= threshold
     weight.mul_(mask)
     return None
 
@@ -294,6 +364,7 @@ def main() -> None:
         raise RuntimeError(f"No nn.Linear modules matched scope={args.scope!r}.")
 
     activation_norms: dict[str, torch.Tensor] = {}
+    gradient_saliency: dict[str, torch.Tensor] = {}
     calibration_count = 0
     if args.method == "wanda":
         texts = calibration_texts(args.calibration_json)
@@ -303,6 +374,22 @@ def main() -> None:
             tokenizer=tokenizer,
             modules=modules,
             texts=texts,
+            device=device,
+            max_length=int(args.max_length),
+            batch_size=max(1, int(args.calibration_batch_size)),
+            calibration_batches=max(1, int(args.calibration_batches)),
+        )
+    elif args.method == "gradient":
+        prompt_label_rows = calibration_prompt_label_rows(args.calibration_json, label2response)
+        calibration_count = min(
+            len(prompt_label_rows),
+            int(args.calibration_batch_size) * int(args.calibration_batches),
+        )
+        gradient_saliency = collect_gradient_saliency(
+            model=model,
+            tokenizer=tokenizer,
+            modules=modules,
+            rows=prompt_label_rows,
             device=device,
             max_length=int(args.max_length),
             batch_size=max(1, int(args.calibration_batch_size)),
@@ -326,6 +413,8 @@ def main() -> None:
                 skipped_reason = nvidia_2_4_prune_(module)
             elif args.method == "wanda":
                 skipped_reason = wanda_prune_(module, activation_norms[name], float(args.sparsity))
+            elif args.method == "gradient":
+                skipped_reason = gradient_prune_(module, gradient_saliency[name], float(args.sparsity))
             else:
                 raise ValueError(f"Unsupported method: {args.method}")
 
@@ -357,16 +446,17 @@ def main() -> None:
             "magnitude": "per_linear_weight_abs_keep_topk",
             "nvidia": "2_to_4_structured_smallest_abs_per_group",
             "wanda": "per_row_abs_weight_times_input_activation_norm_keep_topk",
+            "gradient": "per_linear_taylor_abs_weight_times_gradient_keep_topk",
         }[args.method],
         "scope": args.scope,
         "include_classifier": include_classifier,
         "requested_sparsity": float(args.sparsity),
         "device": str(device),
         "dtype": str(dtype).replace("torch.", ""),
-        "calibration_json": str(args.calibration_json) if args.method == "wanda" else None,
-        "calibration_examples": calibration_count if args.method == "wanda" else None,
-        "calibration_batch_size": int(args.calibration_batch_size) if args.method == "wanda" else None,
-        "calibration_batches": int(args.calibration_batches) if args.method == "wanda" else None,
+        "calibration_json": str(args.calibration_json) if args.method in {"wanda", "gradient"} else None,
+        "calibration_examples": calibration_count if args.method in {"wanda", "gradient"} else None,
+        "calibration_batch_size": int(args.calibration_batch_size) if args.method in {"wanda", "gradient"} else None,
+        "calibration_batches": int(args.calibration_batches) if args.method in {"wanda", "gradient"} else None,
         "targeted_tensors": len(modules),
         "pruned_tensors": pruned_tensors,
         "targeted_parameters": target_after["numel"],
