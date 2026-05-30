@@ -75,6 +75,16 @@ The full pipeline also runs encoder-style C-Eval after training and writes resul
 python scripts/eval_ceval.py --checkpoint runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest --split val --n-shot 5
 ```
 
+Recorded C-Eval result for `step-100000` (`val`, 5-shot, MLM cloze scoring):
+
+| Scope | Accuracy | Correct / Total |
+| --- | ---: | ---: |
+| Overall | 26.52% | 357 / 1346 |
+| Humanities | 21.40% | 55 / 257 |
+| Other | 27.60% | 106 / 384 |
+| STEM | 27.21% | 117 / 430 |
+| Social Science | 28.73% | 79 / 275 |
+
 Set `RUN_CEVAL_AFTER_TRAIN=0` if you want to train first and run C-Eval manually later.
 
 The pipeline skips an already-created tokenizer and packed token file by default. Use `FORCE_TOKENIZER=1` or `FORCE_PACK=1` only when you intentionally want to rebuild those artifacts.
