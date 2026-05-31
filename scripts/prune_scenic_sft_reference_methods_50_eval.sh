@@ -123,53 +123,11 @@ for raw_method in "${method_names[@]}"; do
   completed_methods+=("$label")
 done
 
-python - "$ALL_OUTPUT_DIR" "${completed_methods[@]}" <<'PY'
-from __future__ import annotations
-
-import csv
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-methods = sys.argv[2:]
-rows = []
-
-for method in methods:
-    summary_path = root / method / "comparison_summary.csv"
-    if not summary_path.exists():
-        continue
-    with summary_path.open("r", encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            rows.append({"prune_method": method, **row})
-
-json_path = root / "reference_methods_summary.json"
-csv_path = root / "reference_methods_summary.csv"
-json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-fieldnames = [
-    "prune_method",
-    "model",
-    "dataset",
-    "rows",
-    "scored_rows",
-    "label_space_coverage",
-    "exact_match_accuracy",
-    "top5_accuracy",
-    "checkpoint",
-    "json",
-    "summary_output",
-    "predictions_output",
-]
-with csv_path.open("w", encoding="utf-8", newline="") as handle:
-    writer = csv.DictWriter(handle, fieldnames=fieldnames)
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({field: row.get(field) for field in fieldnames})
-
-print(f"[reference-prune] wrote {json_path}")
-print(f"[reference-prune] wrote {csv_path}")
-PY
+completed_csv="$(IFS=,; echo "${completed_methods[*]}")"
+python scripts/aggregate_scenic_reference_pruning.py \
+  --eval-root "$ALL_OUTPUT_DIR" \
+  --run-root "$RUN_ROOT" \
+  --methods "$completed_csv"
 
 echo "[reference-prune] done"
 echo "  $ALL_OUTPUT_DIR/reference_methods_summary.csv"

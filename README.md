@@ -344,6 +344,12 @@ eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.csv
 eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.json
 ```
 
+The final summary is validated across all requested methods. With the default
+four methods it should contain 16 outcome rows: four evaluation rows per pruning
+method, including two rows for each contrastive-anchor pruned checkpoint. Each
+row records the exact pruned checkpoint and `prune_summary.json` used for that
+evaluation.
+
 Useful overrides:
 
 ```bash

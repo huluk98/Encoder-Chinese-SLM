@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
-import csv
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -143,43 +141,18 @@ def eval_args(*, training_output: str, contrastive_output: str, eval_output: str
 
 
 def aggregate(labels: list[str]) -> None:
-    root = PROJECT_ROOT / EVAL_OUTPUT_DIR
-    rows: list[dict[str, str]] = []
-    for label in labels:
-        summary_path = root / label / "comparison_summary.csv"
-        if not summary_path.exists():
-            continue
-        with summary_path.open("r", encoding="utf-8", newline="") as handle:
-            for row in csv.DictReader(handle):
-                rows.append({"prune_method": label, **row})
-
-    root.mkdir(parents=True, exist_ok=True)
-    json_path = root / "reference_methods_summary.json"
-    csv_path = root / "reference_methods_summary.csv"
-    json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    fieldnames = [
-        "prune_method",
-        "model",
-        "dataset",
-        "rows",
-        "scored_rows",
-        "label_space_coverage",
-        "exact_match_accuracy",
-        "top5_accuracy",
-        "checkpoint",
-        "json",
-        "summary_output",
-        "predictions_output",
-    ]
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field) for field in fieldnames})
-
-    print(f"\n[reference-prune] wrote {csv_path.relative_to(PROJECT_ROOT)}")
-    print(f"[reference-prune] wrote {json_path.relative_to(PROJECT_ROOT)}")
+    run(
+        [
+            sys.executable,
+            "scripts/aggregate_scenic_reference_pruning.py",
+            "--eval-root",
+            EVAL_OUTPUT_DIR,
+            "--run-root",
+            RUN_ROOT,
+            "--methods",
+            ",".join(labels),
+        ]
+    )
 
 
 def main() -> None:
