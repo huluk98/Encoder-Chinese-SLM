@@ -60,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--methods", default=DEFAULT_METHODS, help="Comma-separated method labels or aliases.")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-csv", default=None)
+    parser.add_argument("--output-report", default=None)
+    parser.add_argument("--sample-errors", type=int, default=25)
     parser.add_argument("--allow-missing", action="store_true", help="Skip missing method outputs instead of failing.")
     return parser.parse_args()
 
@@ -159,6 +161,130 @@ def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow({field: row.get(field) for field in CSV_FIELDNAMES})
 
 
+def read_prediction_samples(path: Path, sample_errors: int) -> list[dict[str, Any]]:
+    if not path.exists() or sample_errors <= 0:
+        return []
+    samples: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("correct") is True:
+                continue
+            samples.append(
+                {
+                    "index": row.get("index"),
+                    "id": row.get("id"),
+                    "prompt": row.get("prompt"),
+                    "expected_response": row.get("expected_response"),
+                    "predicted_response": row.get("predicted_response"),
+                    "expected_in_label_space": row.get("expected_in_label_space"),
+                    "top5": row.get("top5"),
+                    "difficulty": row.get("difficulty"),
+                    "task_type": row.get("task_type"),
+                    "source": row.get("source"),
+                }
+            )
+            if len(samples) >= sample_errors:
+                break
+    return samples
+
+
+def compact_prune_summary(path: Path) -> dict[str, Any]:
+    summary = load_json(path)
+    tensors = summary.get("tensors", [])
+    skipped = [
+        {
+            "name": tensor.get("name"),
+            "shape": tensor.get("shape"),
+            "skipped_reason": tensor.get("skipped_reason"),
+            "sparsity_after": tensor.get("sparsity_after"),
+        }
+        for tensor in tensors
+        if tensor.get("skipped_reason")
+    ]
+    sparsity_outliers = [
+        {
+            "name": tensor.get("name"),
+            "shape": tensor.get("shape"),
+            "sparsity_after": tensor.get("sparsity_after"),
+        }
+        for tensor in tensors
+        if tensor.get("skipped_reason") is None
+        and tensor.get("sparsity_after") is not None
+        and abs(float(tensor.get("sparsity_after")) - float(summary.get("requested_sparsity", 0.5))) > 0.05
+    ][:50]
+    return {
+        key: value
+        for key, value in summary.items()
+        if key != "tensors"
+    } | {
+        "tensor_count": len(tensors),
+        "skipped_tensors": skipped,
+        "sparsity_outliers": sparsity_outliers,
+    }
+
+
+def build_debug_report(
+    rows: list[dict[str, Any]],
+    methods: list[str],
+    eval_root: Path,
+    run_root: Path,
+    sample_errors: int,
+) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    for row in rows:
+        summary_output = Path(str(row.get("summary_output", "")))
+        predictions_output = Path(str(row.get("predictions_output", "")))
+        prune_summary_output = Path(str(row.get("prune_summary_output", "")))
+        eval_summary = load_json(summary_output) if summary_output.exists() else {}
+        prune_summary = compact_prune_summary(prune_summary_output) if prune_summary_output.exists() else {}
+        cases.append(
+            {
+                "prune_method": row.get("prune_method"),
+                "model": row.get("model"),
+                "dataset": row.get("dataset"),
+                "metrics": {
+                    "rows": row.get("rows"),
+                    "scored_rows": row.get("scored_rows"),
+                    "label_space_coverage": row.get("label_space_coverage"),
+                    "exact_match_accuracy": row.get("exact_match_accuracy"),
+                    "top5_accuracy": row.get("top5_accuracy"),
+                    "prediction_unique_count": row.get("prediction_unique_count"),
+                    "prediction_unique_ratio": row.get("prediction_unique_ratio"),
+                    "top_prediction": row.get("top_prediction"),
+                    "top_prediction_count": row.get("top_prediction_count"),
+                    "top_prediction_share": row.get("top_prediction_share"),
+                },
+                "paths": {
+                    "checkpoint": row.get("checkpoint"),
+                    "json": row.get("json"),
+                    "summary_output": row.get("summary_output"),
+                    "predictions_output": row.get("predictions_output"),
+                    "pruned_checkpoint": row.get("pruned_checkpoint"),
+                    "prune_summary_output": row.get("prune_summary_output"),
+                },
+                "prune_summary": prune_summary,
+                "eval_summary": eval_summary,
+                "wrong_prediction_samples": read_prediction_samples(predictions_output, sample_errors),
+            }
+        )
+
+    return {
+        "report_type": "scenic_reference_pruning_debug",
+        "methods": methods,
+        "eval_root": str(eval_root),
+        "run_root": str(run_root),
+        "expected_case_count": len(methods) * len(EXPECTED_CASES),
+        "actual_case_count": len(rows),
+        "sample_errors_per_case": sample_errors,
+        "summary_rows": rows,
+        "cases": cases,
+    }
+
+
 def main() -> None:
     args = parse_args()
     eval_root = Path(args.eval_root).expanduser()
@@ -166,6 +292,7 @@ def main() -> None:
     methods = parse_methods(args.methods)
     output_json = Path(args.output_json).expanduser() if args.output_json else eval_root / "reference_methods_summary.json"
     output_csv = Path(args.output_csv).expanduser() if args.output_csv else eval_root / "reference_methods_summary.csv"
+    output_report = Path(args.output_report).expanduser() if args.output_report else eval_root / "reference_methods_debug_report.json"
 
     rows: list[dict[str, Any]] = []
     for method in methods:
@@ -190,13 +317,23 @@ def main() -> None:
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
+    output_report.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_summary_csv(output_csv, rows)
+    report = build_debug_report(
+        rows=rows,
+        methods=methods,
+        eval_root=eval_root,
+        run_root=run_root,
+        sample_errors=max(0, int(args.sample_errors)),
+    )
+    output_report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(f"[reference-prune] methods: {', '.join(methods)}")
     print(f"[reference-prune] outcomes: {len(rows)}")
     print(f"[reference-prune] wrote {output_json}")
     print(f"[reference-prune] wrote {output_csv}")
+    print(f"[reference-prune] wrote {output_report}")
 
 
 if __name__ == "__main__":

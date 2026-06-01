@@ -132,3 +132,4 @@ python scripts/aggregate_scenic_reference_pruning.py \
 echo "[reference-prune] done"
 echo "  $ALL_OUTPUT_DIR/reference_methods_summary.csv"
 echo "  $ALL_OUTPUT_DIR/reference_methods_summary.json"
+echo "  $ALL_OUTPUT_DIR/reference_methods_debug_report.json"

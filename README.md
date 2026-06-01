@@ -380,6 +380,7 @@ The combined comparison table is written to:
 ```text
 eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.csv
 eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.json
+eval_results/scenic_sft/pruned50_reference_methods/reference_methods_debug_report.json
 ```
 
 The final summary is validated across all requested methods. With the default
@@ -387,6 +388,10 @@ four methods it should contain 16 outcome rows: four evaluation rows per pruning
 method, including two rows for each contrastive-anchor pruned checkpoint. Each
 row records the exact pruned checkpoint and `prune_summary.json` used for that
 evaluation.
+
+Use `reference_methods_debug_report.json` as the single file to share for
+debugging low pruning outcomes. It includes all method/model/dataset metrics,
+compact prune summaries, collapse diagnostics, and wrong-prediction samples.
 
 Useful overrides:
 
