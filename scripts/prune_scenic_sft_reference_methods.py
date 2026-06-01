@@ -444,7 +444,9 @@ def main() -> None:
     metadata = read_metadata(checkpoint_dir)
     prune_summary = {
         "input_checkpoint": str(checkpoint_dir),
+        "input_checkpoint_resolved": str(checkpoint_dir.resolve()),
         "output_checkpoint": str(output_dir),
+        "output_checkpoint_resolved": str(output_dir.resolve()),
         "method": args.method,
         "method_detail": {
             "magnitude": "per_linear_weight_abs_keep_topk",
@@ -461,6 +463,10 @@ def main() -> None:
         "calibration_examples": calibration_count if args.method in {"wanda", "gradient"} else None,
         "calibration_batch_size": int(args.calibration_batch_size) if args.method in {"wanda", "gradient"} else None,
         "calibration_batches": int(args.calibration_batches) if args.method in {"wanda", "gradient"} else None,
+        "label_count": len(label2response),
+        "pooling": model.pooling,
+        "normalize_logits": model.normalize_logits,
+        "logit_scale": model.logit_scale,
         "targeted_tensors": len(modules),
         "pruned_tensors": pruned_tensors,
         "targeted_parameters": target_after["numel"],

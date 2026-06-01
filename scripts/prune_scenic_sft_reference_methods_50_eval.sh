@@ -30,6 +30,8 @@ INCLUDE_CLASSIFIER="${INCLUDE_CLASSIFIER:-0}"
 
 mkdir -p "$RUN_ROOT" "$ALL_OUTPUT_DIR"
 
+BASELINE_OUTPUT_DIR="${BASELINE_OUTPUT_DIR:-$ALL_OUTPUT_DIR/unpruned_baseline}"
+
 overwrite_args=()
 if [[ "$OVERWRITE" == "1" ]]; then
   overwrite_args+=(--overwrite)
@@ -43,6 +45,18 @@ fi
 method_names=()
 IFS=',' read -r -a method_names <<< "$METHODS"
 completed_methods=()
+
+echo "[reference-prune] evaluating unpruned baseline checkpoints"
+python scripts/eval_scenic_sft_comparison.py \
+  --benchmark-json "$BENCHMARK_JSON" \
+  --training-json "$TRAINING_JSON" \
+  --contrastive-json "$CONTRASTIVE_JSON" \
+  --training-checkpoint "$TRAINING_CHECKPOINT" \
+  --contrastive-checkpoint "$CONTRASTIVE_CHECKPOINT" \
+  --output-dir "$BASELINE_OUTPUT_DIR" \
+  --batch-size "$BATCH_SIZE" \
+  --max-length "$MAX_LENGTH" \
+  --dtype "$EVAL_DTYPE"
 
 for raw_method in "${method_names[@]}"; do
   method="${raw_method//[[:space:]]/}"
@@ -127,7 +141,8 @@ completed_csv="$(IFS=,; echo "${completed_methods[*]}")"
 python scripts/aggregate_scenic_reference_pruning.py \
   --eval-root "$ALL_OUTPUT_DIR" \
   --run-root "$RUN_ROOT" \
-  --methods "$completed_csv"
+  --methods "$completed_csv" \
+  --baseline-summary "$BASELINE_OUTPUT_DIR/comparison_summary.json"
 
 echo "[reference-prune] done"
 echo "  $ALL_OUTPUT_DIR/reference_methods_summary.csv"

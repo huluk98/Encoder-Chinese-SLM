@@ -387,11 +387,14 @@ The final summary is validated across all requested methods. With the default
 four methods it should contain 16 outcome rows: four evaluation rows per pruning
 method, including two rows for each contrastive-anchor pruned checkpoint. Each
 row records the exact pruned checkpoint and `prune_summary.json` used for that
-evaluation.
+evaluation. The launcher also evaluates the unpruned SFT checkpoints first and
+embeds those baseline rows in `reference_methods_debug_report.json`, so the same
+file shows whether a low score came from the source checkpoint or from pruning.
 
 Use `reference_methods_debug_report.json` as the single file to share for
 debugging low pruning outcomes. It includes all method/model/dataset metrics,
-compact prune summaries, collapse diagnostics, and wrong-prediction samples.
+unpruned baseline metrics, compact prune summaries, collapse diagnostics, and
+wrong-prediction samples.
 
 Useful overrides:
 

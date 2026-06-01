@@ -61,6 +61,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-csv", default=None)
     parser.add_argument("--output-report", default=None)
+    parser.add_argument(
+        "--baseline-summary",
+        default=None,
+        help=(
+            "Optional unpruned eval_scenic_sft_comparison comparison_summary.json. "
+            "When present, its rows are embedded into the debug report so pruned "
+            "outcomes can be compared against the exact source checkpoints."
+        ),
+    )
     parser.add_argument("--sample-errors", type=int, default=25)
     parser.add_argument("--allow-missing", action="store_true", help="Skip missing method outputs instead of failing.")
     return parser.parse_args()
@@ -192,6 +201,52 @@ def read_prediction_samples(path: Path, sample_errors: int) -> list[dict[str, An
     return samples
 
 
+def compact_eval_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": row.get("model"),
+        "dataset": row.get("dataset"),
+        "metrics": {
+            "rows": row.get("rows"),
+            "scored_rows": row.get("scored_rows"),
+            "label_space_coverage": row.get("label_space_coverage"),
+            "exact_match_accuracy": row.get("exact_match_accuracy"),
+            "top5_accuracy": row.get("top5_accuracy"),
+            "prediction_unique_count": row.get("prediction_unique_count"),
+            "prediction_unique_ratio": row.get("prediction_unique_ratio"),
+            "top_prediction": row.get("top_prediction"),
+            "top_prediction_count": row.get("top_prediction_count"),
+            "top_prediction_share": row.get("top_prediction_share"),
+        },
+        "paths": {
+            "checkpoint": row.get("checkpoint"),
+            "json": row.get("json"),
+            "summary_output": row.get("summary_output"),
+            "predictions_output": row.get("predictions_output"),
+        },
+    }
+
+
+def load_baseline_rows(path: Path | None, allow_missing: bool) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    if not path.exists():
+        if allow_missing:
+            print(f"[reference-prune] skipping missing baseline summary: {path}")
+            return []
+        raise FileNotFoundError(f"Missing baseline summary: {path}")
+    rows = load_json(path)
+    if not isinstance(rows, list):
+        raise ValueError(f"{path} must contain a JSON list.")
+    if not allow_missing:
+        validate_cases("unpruned_baseline", rows)
+    compact_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"{path} contains a non-object row: {row!r}")
+        compact_rows.append(compact_eval_row(row))
+    return compact_rows
+
+
 def compact_prune_summary(path: Path) -> dict[str, Any]:
     summary = load_json(path)
     tensors = summary.get("tensors", [])
@@ -233,6 +288,7 @@ def build_debug_report(
     eval_root: Path,
     run_root: Path,
     sample_errors: int,
+    baseline_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
     for row in rows:
@@ -280,6 +336,8 @@ def build_debug_report(
         "expected_case_count": len(methods) * len(EXPECTED_CASES),
         "actual_case_count": len(rows),
         "sample_errors_per_case": sample_errors,
+        "baseline_case_count": len(baseline_rows),
+        "baseline_rows": baseline_rows,
         "summary_rows": rows,
         "cases": cases,
     }
@@ -293,6 +351,11 @@ def main() -> None:
     output_json = Path(args.output_json).expanduser() if args.output_json else eval_root / "reference_methods_summary.json"
     output_csv = Path(args.output_csv).expanduser() if args.output_csv else eval_root / "reference_methods_summary.csv"
     output_report = Path(args.output_report).expanduser() if args.output_report else eval_root / "reference_methods_debug_report.json"
+    default_baseline_summary = eval_root / "unpruned_baseline" / "comparison_summary.json"
+    if args.baseline_summary:
+        baseline_summary = Path(args.baseline_summary).expanduser()
+    else:
+        baseline_summary = default_baseline_summary if default_baseline_summary.exists() else None
 
     rows: list[dict[str, Any]] = []
     for method in methods:
@@ -326,6 +389,7 @@ def main() -> None:
         eval_root=eval_root,
         run_root=run_root,
         sample_errors=max(0, int(args.sample_errors)),
+        baseline_rows=load_baseline_rows(baseline_summary, bool(args.allow_missing)),
     )
     output_report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
