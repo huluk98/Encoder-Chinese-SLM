@@ -160,8 +160,10 @@ This is encoder-only supervised fine-tuning, so it trains prompt-to-response **c
 The contrastive-dataset model uses `anchor -> response` as the supervised task and also uses the positive/negative fields as an auxiliary contrastive loss.
 
 New SCENIC SFT configs use attention-mask mean pooling for the classification
-embedding. Earlier checkpoints that do not record a pooling mode still load with
-their original CLS pooling.
+embedding, cosine-style logits, and initialize each classifier row from the
+encoder embedding of that response label. The response classifier also uses a
+separate higher learning rate than the encoder. Earlier checkpoints that do not
+record these settings still load with their original CLS/random-head behavior.
 
 These SCENIC JSON files are tracked in this repo, so `git pull` brings them down with the SFT scripts. Train both models sequentially on the 8-GPU H20 box:
 

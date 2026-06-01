@@ -24,6 +24,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from chatlm_encoder.scenic_sft import (  # noqa: E402
     ScenicEncoderForResponseSelection,
     build_label_maps,
+    initialize_classifier_from_responses,
     load_base_scenic_model,
     load_contrastive_rows,
     load_prompt_response_rows,
@@ -110,9 +111,15 @@ def ensure_token_type_ids(encoded: dict[str, torch.Tensor]) -> dict[str, torch.T
     return encoded
 
 
-def lr_for_step(step: int, total_steps: int, config: dict[str, Any]) -> float:
-    max_lr = float(config.get("learning_rate", 2e-5))
-    min_lr = float(config.get("min_learning_rate", max_lr * 0.1))
+def lr_for_step(
+    step: int,
+    total_steps: int,
+    config: dict[str, Any],
+    max_lr: float | None = None,
+    min_lr: float | None = None,
+) -> float:
+    max_lr = float(config.get("learning_rate", 2e-5) if max_lr is None else max_lr)
+    min_lr = float(config.get("min_learning_rate", max_lr * 0.1) if min_lr is None else min_lr)
     warmup_steps = int(config.get("warmup_steps") or round(total_steps * float(config.get("warmup_ratio", 0.06))))
     if warmup_steps > 0 and step < warmup_steps:
         return max_lr * float(step + 1) / float(warmup_steps)
@@ -120,6 +127,50 @@ def lr_for_step(step: int, total_steps: int, config: dict[str, Any]) -> float:
     progress = min(1.0, max(0.0, float(step - warmup_steps) / float(decay_steps)))
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
     return min_lr + cosine * (max_lr - min_lr)
+
+
+def optimizer_param_groups(model: torch.nn.Module, config: dict[str, Any]) -> list[dict[str, Any]]:
+    encoder_lr = float(config.get("learning_rate", 2e-5))
+    encoder_min_lr = float(config.get("min_learning_rate", encoder_lr * 0.1))
+    classifier_lr = float(config.get("classifier_learning_rate", encoder_lr))
+    classifier_min_lr = float(config.get("classifier_min_learning_rate", classifier_lr * 0.1))
+    weight_decay = float(config.get("weight_decay", 0.01))
+
+    encoder_params: list[torch.nn.Parameter] = []
+    classifier_params: list[torch.nn.Parameter] = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        normalized_name = name.removeprefix("module.")
+        if normalized_name.startswith("classifier."):
+            classifier_params.append(parameter)
+        else:
+            encoder_params.append(parameter)
+
+    groups: list[dict[str, Any]] = []
+    if encoder_params:
+        groups.append(
+            {
+                "params": encoder_params,
+                "lr": encoder_lr,
+                "max_lr": encoder_lr,
+                "min_lr": encoder_min_lr,
+                "weight_decay": weight_decay,
+                "name": "encoder",
+            }
+        )
+    if classifier_params:
+        groups.append(
+            {
+                "params": classifier_params,
+                "lr": classifier_lr,
+                "max_lr": classifier_lr,
+                "min_lr": classifier_min_lr,
+                "weight_decay": weight_decay,
+                "name": "classifier",
+            }
+        )
+    return groups
 
 
 def collate_prompt_response(tokenizer: Any, max_length: int):
@@ -144,7 +195,9 @@ def collate_contrastive(tokenizer: Any, max_length: int):
         positives = [item["positive"] for item in batch]
         negatives = [item["negative"] for item in batch]
         invalid_negatives = [item.get("invalid_negative", item["negative"]) for item in batch]
-        texts = anchors + positives + negatives + invalid_negatives
+        responses = [item.get("response", item["positive"]) for item in batch]
+        negative_responses = [item.get("negative_response", item["negative"]) for item in batch]
+        texts = anchors + positives + negatives + invalid_negatives + responses + negative_responses
         encoded = tokenizer(texts, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
         encoded = ensure_token_type_ids(dict(encoded))
         return {
@@ -168,10 +221,11 @@ def contrastive_loss(
 ) -> torch.Tensor:
     size = int(batch["batch_size"])
     embeddings = torch.nn.functional.normalize(model(move_batch(batch["tokens"], device))["embeddings"], dim=-1)
-    anchor, positive, negative, invalid_negative = embeddings.split(size, dim=0)
+    anchor, positive, negative, invalid_negative, response, negative_response = embeddings.split(size, dim=0)
     valid_loss = torch.nn.functional.triplet_margin_loss(anchor, positive, negative, margin=float(margin))
     invalid_loss = torch.nn.functional.triplet_margin_loss(anchor, positive, invalid_negative, margin=float(margin))
-    return 0.5 * (valid_loss + invalid_loss)
+    response_loss = torch.nn.functional.triplet_margin_loss(anchor, response, negative_response, margin=float(margin))
+    return (valid_loss + invalid_loss + response_loss) / 3.0
 
 
 def save_latest(
@@ -237,8 +291,21 @@ def main() -> None:
         num_labels=len(label2response),
         dropout=float(model_config.get("dropout", 0.1)),
         pooling=str(model_config.get("pooling", "cls")),
+        normalize_logits=bool(model_config.get("normalize_logits", False)),
+        logit_scale=float(model_config.get("logit_scale", 20.0)),
     )
     model.to(device)
+    if bool(model_config.get("init_classifier_from_responses", False)):
+        if is_main(rank):
+            print("[scenic-sft] initializing response classifier from encoded label texts")
+        initialize_classifier_from_responses(
+            model=model,
+            tokenizer=tokenizer,
+            label2response=label2response,
+            device=device,
+            max_length=int(model_config.get("classifier_init_max_length", data_config.get("max_length", 128))),
+            batch_size=int(model_config.get("classifier_init_batch_size", 128)),
+        )
     if world_size > 1:
         model = DistributedDataParallel(
             model,
@@ -280,12 +347,8 @@ def main() -> None:
     epoch_steps = max(1, math.ceil(len(train_loader) / grad_accum_steps))
     configured_max_steps = train_config.get("max_steps")
     total_steps = int(configured_max_steps) if configured_max_steps else max(1, epochs * epoch_steps)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(train_config.get("learning_rate", 2e-5)),
-        weight_decay=float(train_config.get("weight_decay", 0.01)),
-        eps=float(train_config.get("adam_eps", 1e-8)),
-    )
+    param_groups = optimizer_param_groups(model, train_config)
+    optimizer = torch.optim.AdamW(param_groups, eps=float(train_config.get("adam_eps", 1e-8)))
     precision = str(train_config.get("precision", "bf16")).lower()
     contrast_iter = endless(contrast_loader) if contrast_loader is not None else None
     contrastive_weight = float(train_config.get("contrastive_weight", 0.1))
@@ -313,7 +376,13 @@ def main() -> None:
         for micro_step, batch in enumerate(train_loader, start=1):
             lr = lr_for_step(optimizer_step, total_steps, train_config)
             for group in optimizer.param_groups:
-                group["lr"] = lr
+                group["lr"] = lr_for_step(
+                    optimizer_step,
+                    total_steps,
+                    train_config,
+                    max_lr=float(group["max_lr"]),
+                    min_lr=float(group["min_lr"]),
+                )
 
             tokens = move_batch(batch["tokens"], device)
             labels = batch["labels"].to(device, non_blocking=True)
@@ -346,6 +415,7 @@ def main() -> None:
                 print(
                     f"[scenic-sft] step={optimizer_step:,}/{total_steps:,} "
                     f"epoch={epoch + 1}/{epochs} lr={lr:.3e} "
+                    f"clf_lr={optimizer.param_groups[-1]['lr']:.3e} "
                     f"loss={float(loss.detach()):.4f} clf={float(clf_loss):.4f} "
                     f"contrastive={float(cont_loss_value):.4f} acc={accuracy:.4f} "
                     f"steps_per_sec={optimizer_step / elapsed:.3f}"

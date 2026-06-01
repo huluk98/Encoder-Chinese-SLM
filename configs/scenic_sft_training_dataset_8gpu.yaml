@@ -7,6 +7,11 @@ model:
   tokenizer_path: artifacts/tokenizer-chatlm-encoder-bpe-29298
   dropout: 0.1
   pooling: mean
+  normalize_logits: true
+  logit_scale: 20.0
+  init_classifier_from_responses: true
+  classifier_init_batch_size: 128
+  classifier_init_max_length: 128
 
 data:
   train_json: data/scenic/SCENIC_full_training_dataset.json
@@ -21,6 +26,8 @@ train:
   grad_accum_steps: 1
   learning_rate: 0.00002
   min_learning_rate: 0.000002
+  classifier_learning_rate: 0.001
+  classifier_min_learning_rate: 0.0001
   warmup_ratio: 0.06
   weight_decay: 0.01
   adam_eps: 0.00000001

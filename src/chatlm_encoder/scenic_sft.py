@@ -57,10 +57,16 @@ def load_contrastive_rows(path: str | Path) -> list[dict[str, str]]:
         positive = clean_text(row.get("positive"))
         negative = clean_text(row.get("negative"))
         invalid_negative = clean_text(row.get("invalid_negative"))
+        response = clean_text(row.get("response"))
+        negative_response = clean_text(row.get("negative_response"))
         if anchor and positive and negative:
             item = {"anchor": anchor, "positive": positive, "negative": negative}
             if invalid_negative:
                 item["invalid_negative"] = invalid_negative
+            if response:
+                item["response"] = response
+            if negative_response:
+                item["negative_response"] = negative_response
             rows.append(item)
     return rows
 
@@ -72,13 +78,23 @@ def build_label_maps(rows: list[dict[str, str]]) -> tuple[dict[str, int], list[s
 
 
 class ScenicEncoderForResponseSelection(nn.Module):
-    def __init__(self, encoder: nn.Module, num_labels: int, dropout: float = 0.1, pooling: str = "cls") -> None:
+    def __init__(
+        self,
+        encoder: nn.Module,
+        num_labels: int,
+        dropout: float = 0.1,
+        pooling: str = "cls",
+        normalize_logits: bool = False,
+        logit_scale: float = 20.0,
+    ) -> None:
         super().__init__()
         pooling = str(pooling).lower()
         if pooling not in POOLING_MODES:
             raise ValueError(f"Unsupported pooling={pooling!r}. Use one of {sorted(POOLING_MODES)}.")
         self.encoder = encoder
         self.pooling = pooling
+        self.normalize_logits = bool(normalize_logits)
+        self.logit_scale = float(logit_scale)
         hidden_size = int(getattr(encoder.config, "hidden_size"))
         self.dropout = nn.Dropout(float(dropout))
         self.classifier = nn.Linear(hidden_size, int(num_labels))
@@ -97,13 +113,24 @@ class ScenicEncoderForResponseSelection(nn.Module):
         outputs = self.encoder(**batch)
         return self.pooled_output(outputs, batch.get("attention_mask"))
 
+    def classify(self, embeddings: torch.Tensor) -> torch.Tensor:
+        embeddings = self.dropout(embeddings)
+        if not self.normalize_logits:
+            return self.classifier(embeddings)
+        normalized_embeddings = nn.functional.normalize(embeddings, dim=-1)
+        normalized_weights = nn.functional.normalize(self.classifier.weight, dim=-1)
+        logits = nn.functional.linear(normalized_embeddings, normalized_weights) * self.logit_scale
+        if self.classifier.bias is not None:
+            logits = logits + self.classifier.bias
+        return logits
+
     def forward(
         self,
         batch: dict[str, torch.Tensor],
         labels: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         embeddings = self.encode(batch)
-        logits = self.classifier(self.dropout(embeddings))
+        logits = self.classify(embeddings)
         output = {"logits": logits, "embeddings": embeddings}
         if labels is not None:
             output["loss"] = nn.functional.cross_entropy(logits, labels)
@@ -116,6 +143,8 @@ def load_base_scenic_model(
     num_labels: int,
     dropout: float = 0.1,
     pooling: str = "cls",
+    normalize_logits: bool = False,
+    logit_scale: float = 20.0,
 ) -> tuple[ScenicEncoderForResponseSelection, Any]:
     tokenizer_source = str(Path(tokenizer_path).expanduser()) if tokenizer_path else str(Path(base_model).expanduser())
     model_source = str(Path(base_model).expanduser())
@@ -123,7 +152,64 @@ def load_base_scenic_model(
     encoder = load_encoder_without_pooler(model_source)
     if len(tokenizer) != int(encoder.config.vocab_size):
         encoder.resize_token_embeddings(len(tokenizer))
-    return ScenicEncoderForResponseSelection(encoder, num_labels=num_labels, dropout=dropout, pooling=pooling), tokenizer
+    return (
+        ScenicEncoderForResponseSelection(
+            encoder,
+            num_labels=num_labels,
+            dropout=dropout,
+            pooling=pooling,
+            normalize_logits=normalize_logits,
+            logit_scale=logit_scale,
+        ),
+        tokenizer,
+    )
+
+
+def ensure_token_type_ids(encoded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if "token_type_ids" not in encoded:
+        encoded["token_type_ids"] = torch.zeros_like(encoded["input_ids"])
+    return encoded
+
+
+@torch.no_grad()
+def initialize_classifier_from_responses(
+    model: ScenicEncoderForResponseSelection,
+    tokenizer: Any,
+    label2response: list[str],
+    device: torch.device,
+    max_length: int = 128,
+    batch_size: int = 128,
+) -> None:
+    was_training = model.training
+    model.eval()
+    embeddings: list[torch.Tensor] = []
+    for start in range(0, len(label2response), max(1, int(batch_size))):
+        texts = label2response[start : start + max(1, int(batch_size))]
+        encoded = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=int(max_length),
+            return_tensors="pt",
+        )
+        encoded = ensure_token_type_ids(dict(encoded))
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+        batch_embeddings = model.encode(encoded).float()
+        embeddings.append(nn.functional.normalize(batch_embeddings, dim=-1).cpu())
+
+    weight = torch.cat(embeddings, dim=0).to(
+        device=model.classifier.weight.device,
+        dtype=model.classifier.weight.dtype,
+    )
+    if weight.shape != model.classifier.weight.shape:
+        raise ValueError(
+            f"Response classifier init shape mismatch: {list(weight.shape)} "
+            f"vs {list(model.classifier.weight.shape)}"
+        )
+    model.classifier.weight.copy_(weight)
+    if model.classifier.bias is not None:
+        model.classifier.bias.zero_()
+    model.train(was_training)
 
 
 def load_encoder_without_pooler(model_source: str) -> nn.Module:
@@ -153,6 +239,8 @@ def save_scenic_checkpoint(
             "num_labels": len(label2response),
             "dropout": float(model.dropout.p),
             "pooling": model.pooling,
+            "normalize_logits": model.normalize_logits,
+            "logit_scale": model.logit_scale,
         },
         checkpoint_dir / "classifier.pt",
     )
@@ -180,6 +268,8 @@ def load_scenic_checkpoint(
         num_labels=int(classifier_state.get("num_labels", len(label2response))),
         dropout=float(classifier_state.get("dropout", 0.1)),
         pooling=str(classifier_state.get("pooling", "cls")),
+        normalize_logits=bool(classifier_state.get("normalize_logits", False)),
+        logit_scale=float(classifier_state.get("logit_scale", 20.0)),
     )
     model.classifier.load_state_dict(classifier_state["classifier"])
     model.to(device)
