@@ -204,6 +204,20 @@ Run the full comparison suite:
 python scripts/eval_scenic_sft_comparison.py
 ```
 
+For a direct EM@1/EM@5 sanity check on training retention and benchmark rows,
+run:
+
+```bash
+python scripts/check_scenic_sft_em1_em5.py
+```
+
+This writes:
+
+```text
+eval_results/scenic_sft/em1_em5_check/em1_em5_summary.json
+eval_results/scenic_sft/em1_em5_check/em1_em5_summary.csv
+```
+
 If you prefer not to pass CLI flags, edit the path block at the top of:
 
 ```text
