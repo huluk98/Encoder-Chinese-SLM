@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sparsity", type=float, default=SPARSITY, help="Target sparsity. NVIDIA requires 0.5.")
     parser.add_argument(
         "--scope",
-        default="all-linear",
+        default="encoder-linear",
         choices=("encoder-linear", "all-linear"),
         help=(
             "encoder-linear prunes encoder nn.Linear weights only; "
@@ -55,7 +55,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--exclude-classifier",
         action="store_true",
-        help="Leave the SCENIC response classifier dense. By default it is pruned to match the T5 scripts' all-linear behavior.",
+        help=(
+            "Leave the SCENIC response classifier dense when --scope all-linear is used. "
+            "The default encoder-linear scope does not select the classifier."
+        ),
     )
     parser.add_argument("--calibration-json", default=CALIBRATION_JSON, help="Prompt JSON used for WANDA activation calibration.")
     parser.add_argument("--calibration-batch-size", type=int, default=CALIBRATION_BATCH_SIZE)

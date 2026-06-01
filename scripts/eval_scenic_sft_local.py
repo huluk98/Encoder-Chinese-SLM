@@ -5,7 +5,7 @@ import argparse
 import json
 import math
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +122,8 @@ def main() -> None:
     correct = 0
     top5_correct = 0
     expected_in_label_space = 0
+    predicted_counts: Counter[str] = Counter()
+    expected_counts: Counter[str] = Counter()
     grouped_metrics: dict[str, defaultdict[str, dict[str, int]]] = {
         field: defaultdict(new_metric_bucket) for field in GROUP_FIELDS
     }
@@ -149,6 +151,9 @@ def main() -> None:
                 expected = item["expected_response"]
                 top5_responses = {label2response[int(label_id)] for label_id in top_ids}
                 expected_covered = bool(expected and expected in label_set)
+                predicted_counts[predicted] += 1
+                if expected:
+                    expected_counts[expected] += 1
                 result = {
                     "index": item["index"],
                     "prompt": item["prompt"],
@@ -176,6 +181,16 @@ def main() -> None:
                     if value is not None and str(value).strip():
                         update_metric_bucket(buckets[str(value)], expected, predicted, top5_responses, label_set)
 
+    top_predictions = [
+        {"response": response, "count": count, "share": count / total if total else None}
+        for response, count in predicted_counts.most_common(20)
+    ]
+    top_expected_responses = [
+        {"response": response, "count": count, "share": count / total if total else None}
+        for response, count in expected_counts.most_common(20)
+    ]
+    top_prediction = top_predictions[0] if top_predictions else {}
+
     summary = {
         "checkpoint": str(args.checkpoint),
         "json": str(args.json),
@@ -184,6 +199,14 @@ def main() -> None:
         "predictions_output": str(output_path),
         "rows": total,
         "scored_rows": scored,
+        "prediction_unique_count": len(predicted_counts),
+        "prediction_unique_ratio": len(predicted_counts) / total if total else None,
+        "top_prediction": top_prediction.get("response"),
+        "top_prediction_count": top_prediction.get("count"),
+        "top_prediction_share": top_prediction.get("share"),
+        "top_predictions": top_predictions,
+        "expected_unique_count": len(expected_counts),
+        "top_expected_responses": top_expected_responses,
         "expected_in_label_space": expected_in_label_space,
         "label_space_coverage": expected_in_label_space / scored if scored else None,
         "exact_match_correct": correct,
@@ -214,6 +237,13 @@ def main() -> None:
         print(f"label_space_coverage: {expected_in_label_space / scored:.6f} ({expected_in_label_space:,}/{scored:,})")
         print(f"exact_accuracy: {correct / scored:.6f} ({correct:,}/{scored:,})")
         print(f"top5_accuracy: {top5_correct / scored:.6f} ({top5_correct:,}/{scored:,})")
+        print(f"prediction_unique_count: {len(predicted_counts):,}/{total:,}")
+        if top_predictions:
+            print(
+                "top_prediction: "
+                f"{top_predictions[0]['response']} "
+                f"({top_predictions[0]['count']:,}/{total:,}, {top_predictions[0]['share']:.6f})"
+            )
     else:
         print("No expected response fields found; wrote predictions only.")
 

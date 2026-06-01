@@ -159,6 +159,10 @@ This is encoder-only supervised fine-tuning, so it trains prompt-to-response **c
 
 The contrastive-dataset model uses `anchor -> response` as the supervised task and also uses the positive/negative fields as an auxiliary contrastive loss.
 
+New SCENIC SFT configs use attention-mask mean pooling for the classification
+embedding. Earlier checkpoints that do not record a pooling mode still load with
+their original CLS pooling.
+
 These SCENIC JSON files are tracked in this repo, so `git pull` brings them down with the SFT scripts. Train both models sequentially on the 8-GPU H20 box:
 
 ```bash
@@ -331,7 +335,10 @@ This runs four post-SFT pruning methods on both SCENIC SFT checkpoints:
 - `wanda`: WANDA pruning with calibration activations from the matching SCENIC JSON
 - `gradient`: Taylor-style gradient pruning using `(weight * grad).abs()` over matching SCENIC calibration rows
 
-By default, this matches the T5 scripts' target surface: all `nn.Linear.weight` tensors, including the response classifier, with embeddings and LayerNorm/bias left dense. The pruned checkpoints are written under:
+By default, the reference-method launcher now prunes encoder transformer
+`nn.Linear.weight` tensors and leaves the response classifier dense. This is the
+safer default for the encoder-only SFT classifier, because the classifier is the
+full response-label head. The pruned checkpoints are written under:
 
 ```text
 runs/scenic-pruned50-reference-methods/
@@ -357,6 +364,12 @@ METHODS=magnitude,nvidia,wanda,gradient ./scripts/prune_scenic_sft_reference_met
 PRUNE_SCOPE=encoder-linear ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 INCLUDE_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 CALIBRATION_BATCHES=128 CALIBRATION_BATCH_SIZE=8 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+```
+
+For the older apples-to-apples all-linear T5-style surface, use:
+
+```bash
+PRUNE_SCOPE=all-linear INCLUDE_CLASSIFIER=1 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 ```
 
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
@@ -397,7 +410,7 @@ SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_summary.json"
 EVAL_DTYPE = "auto"
 ```
 
-The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, label-space coverage, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy` plus grouped accuracy by `difficulty`, `task_type`, and `source` when those fields exist.
+The evaluator accepts JSON lists with either `prompt` + `response` rows or `anchor` + `response` rows. It prints exact-match accuracy, top-5 accuracy, label-space coverage, writes per-row predictions, and saves a summary JSON containing `exact_match_accuracy`, prediction-collapse diagnostics such as `prediction_unique_count` and `top_prediction_share`, plus grouped accuracy by `difficulty`, `task_type`, and `source` when those fields exist.
 
 ## Smoke Run
 

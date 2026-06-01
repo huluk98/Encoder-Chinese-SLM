@@ -236,6 +236,7 @@ def main() -> None:
         tokenizer_path=model_config.get("tokenizer_path"),
         num_labels=len(label2response),
         dropout=float(model_config.get("dropout", 0.1)),
+        pooling=str(model_config.get("pooling", "cls")),
     )
     model.to(device)
     if world_size > 1:

@@ -5,7 +5,7 @@ export PYTHONUNBUFFERED=1
 
 METHODS="${METHODS:-magnitude,nvidia,wanda,gradient}"
 SPARSITY="${SPARSITY:-0.5}"
-PRUNE_SCOPE="${PRUNE_SCOPE:-all-linear}"
+PRUNE_SCOPE="${PRUNE_SCOPE:-encoder-linear}"
 RUN_ROOT="${RUN_ROOT:-runs/scenic-pruned50-reference-methods}"
 ALL_OUTPUT_DIR="${ALL_OUTPUT_DIR:-eval_results/scenic_sft/pruned50_reference_methods}"
 
@@ -26,7 +26,7 @@ EVAL_DTYPE="${EVAL_DTYPE:-auto}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 MAX_LENGTH="${MAX_LENGTH:-128}"
 OVERWRITE="${OVERWRITE:-1}"
-INCLUDE_CLASSIFIER="${INCLUDE_CLASSIFIER:-1}"
+INCLUDE_CLASSIFIER="${INCLUDE_CLASSIFIER:-0}"
 
 mkdir -p "$RUN_ROOT" "$ALL_OUTPUT_DIR"
 

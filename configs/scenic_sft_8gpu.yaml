@@ -8,6 +8,7 @@ model:
   base_model: runs/h20-8gpu-bert-0p2b-mlm-deepspeed/latest
   tokenizer_path: artifacts/tokenizer-chatlm-encoder-bpe-29298
   dropout: 0.1
+  pooling: mean
 
 data:
   # Main supervised prompt -> response labels.

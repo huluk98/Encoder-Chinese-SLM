@@ -33,11 +33,11 @@ CONTRASTIVE_CALIBRATION_JSON = CONTRASTIVE_JSON
 RUN_ROOT = "runs/scenic-pruned50-reference-methods"
 EVAL_OUTPUT_DIR = "eval_results/scenic_sft/pruned50_reference_methods"
 
-# Pruning settings. Defaults mirror the reference T5 scripts: 50% pruning over all
-# nn.Linear weights, including the response classifier.
+# Pruning settings. Defaults protect the response classifier, which is the
+# full-response label head for this encoder-only SFT setup.
 SPARSITY = 0.5
-PRUNE_SCOPE = "all-linear"  # "all-linear" or "encoder-linear"
-INCLUDE_CLASSIFIER = True
+PRUNE_SCOPE = "encoder-linear"  # "all-linear" or "encoder-linear"
+INCLUDE_CLASSIFIER = False
 
 # Runtime settings.
 PRUNE_DEVICE = "auto"  # "auto", "cuda", "cuda:0", "mps", or "cpu"

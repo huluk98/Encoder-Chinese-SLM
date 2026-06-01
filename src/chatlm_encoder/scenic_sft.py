@@ -11,6 +11,7 @@ from transformers import AutoModel, AutoTokenizer
 
 
 PROMPT_FIELDS = ("prompt", "anchor", "instruction", "input", "text", "query")
+POOLING_MODES = {"cls", "mean"}
 
 
 def read_json_list(path: str | Path) -> list[dict[str, Any]]:
@@ -71,20 +72,30 @@ def build_label_maps(rows: list[dict[str, str]]) -> tuple[dict[str, int], list[s
 
 
 class ScenicEncoderForResponseSelection(nn.Module):
-    def __init__(self, encoder: nn.Module, num_labels: int, dropout: float = 0.1) -> None:
+    def __init__(self, encoder: nn.Module, num_labels: int, dropout: float = 0.1, pooling: str = "cls") -> None:
         super().__init__()
+        pooling = str(pooling).lower()
+        if pooling not in POOLING_MODES:
+            raise ValueError(f"Unsupported pooling={pooling!r}. Use one of {sorted(POOLING_MODES)}.")
         self.encoder = encoder
+        self.pooling = pooling
         hidden_size = int(getattr(encoder.config, "hidden_size"))
         self.dropout = nn.Dropout(float(dropout))
         self.classifier = nn.Linear(hidden_size, int(num_labels))
 
-    def pooled_output(self, outputs: Any) -> torch.Tensor:
-        # MLM pretraining does not train BERT's optional pooler, so use CLS directly.
-        return outputs.last_hidden_state[:, 0]
+    def pooled_output(self, outputs: Any, attention_mask: torch.Tensor | None) -> torch.Tensor:
+        hidden = outputs.last_hidden_state
+        if self.pooling == "cls":
+            return hidden[:, 0]
+        if attention_mask is None:
+            return hidden.mean(dim=1)
+        mask = attention_mask.unsqueeze(-1).to(dtype=hidden.dtype, device=hidden.device)
+        denominator = mask.sum(dim=1).clamp_min(1.0)
+        return (hidden * mask).sum(dim=1) / denominator
 
     def encode(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         outputs = self.encoder(**batch)
-        return self.pooled_output(outputs)
+        return self.pooled_output(outputs, batch.get("attention_mask"))
 
     def forward(
         self,
@@ -104,6 +115,7 @@ def load_base_scenic_model(
     tokenizer_path: str | Path | None,
     num_labels: int,
     dropout: float = 0.1,
+    pooling: str = "cls",
 ) -> tuple[ScenicEncoderForResponseSelection, Any]:
     tokenizer_source = str(Path(tokenizer_path).expanduser()) if tokenizer_path else str(Path(base_model).expanduser())
     model_source = str(Path(base_model).expanduser())
@@ -111,7 +123,7 @@ def load_base_scenic_model(
     encoder = load_encoder_without_pooler(model_source)
     if len(tokenizer) != int(encoder.config.vocab_size):
         encoder.resize_token_embeddings(len(tokenizer))
-    return ScenicEncoderForResponseSelection(encoder, num_labels=num_labels, dropout=dropout), tokenizer
+    return ScenicEncoderForResponseSelection(encoder, num_labels=num_labels, dropout=dropout, pooling=pooling), tokenizer
 
 
 def load_encoder_without_pooler(model_source: str) -> nn.Module:
@@ -140,6 +152,7 @@ def save_scenic_checkpoint(
             "classifier": model.classifier.state_dict(),
             "num_labels": len(label2response),
             "dropout": float(model.dropout.p),
+            "pooling": model.pooling,
         },
         checkpoint_dir / "classifier.pt",
     )
@@ -166,6 +179,7 @@ def load_scenic_checkpoint(
         encoder,
         num_labels=int(classifier_state.get("num_labels", len(label2response))),
         dropout=float(classifier_state.get("dropout", 0.1)),
+        pooling=str(classifier_state.get("pooling", "cls")),
     )
     model.classifier.load_state_dict(classifier_state["classifier"])
     model.to(device)
