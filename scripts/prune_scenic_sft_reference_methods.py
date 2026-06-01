@@ -277,7 +277,8 @@ def collect_gradient_saliency(
     calibration_batches: int,
 ) -> dict[str, torch.Tensor]:
     saliency = {name: torch.zeros_like(module.weight.data, dtype=torch.float32) for name, module in modules}
-    model.train()
+    was_training = model.training
+    model.eval()
     used_batches = 0
     for start in tqdm(range(0, len(rows), batch_size), desc="gradient calibration", unit="batch"):
         if used_batches >= calibration_batches:
@@ -302,7 +303,7 @@ def collect_gradient_saliency(
         model.zero_grad(set_to_none=True)
         used_batches += 1
 
-    model.eval()
+    model.train(was_training)
     return saliency
 
 
