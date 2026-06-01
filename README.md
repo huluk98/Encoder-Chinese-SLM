@@ -204,8 +204,8 @@ Run the full comparison suite:
 python scripts/eval_scenic_sft_comparison.py
 ```
 
-For a direct EM@1/EM@5 sanity check on training retention and benchmark rows,
-run:
+For a direct base-SFT EM@1/EM@5 sanity check on training retention and
+benchmark rows, run:
 
 ```bash
 python scripts/check_scenic_sft_em1_em5.py

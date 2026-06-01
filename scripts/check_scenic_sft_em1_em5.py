@@ -12,10 +12,8 @@ from typing import Any
 
 BENCHMARK_JSON = "data/scenic/iot_instruction_benchmark_200.json"
 TRAINING_JSON = "data/scenic/SCENIC_full_training_dataset.json"
-CONTRASTIVE_JSON = "data/scenic/SCENIC_full_anchor_positive_negative.json"
 
 TRAINING_CHECKPOINT = "runs/scenic-sft-training-dataset/latest"
-CONTRASTIVE_CHECKPOINT = "runs/scenic-sft-contrastive-dataset/latest"
 
 OUTPUT_DIR = "eval_results/scenic_sft/em1_em5_check"
 BATCH_SIZE = 128
@@ -26,15 +24,12 @@ EVAL_DTYPE = "auto"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Check SCENIC SFT EM@1 and EM@5 on each model's training data and "
-            "the 200-row benchmark."
+            "Check the base SCENIC SFT checkpoint's EM@1 and EM@5 on its "
+            "training data and the 200-row benchmark."
         )
     )
-    parser.add_argument("--model", choices=("both", "sft", "contrastive"), default="both")
     parser.add_argument("--training-checkpoint", default=TRAINING_CHECKPOINT)
-    parser.add_argument("--contrastive-checkpoint", default=CONTRASTIVE_CHECKPOINT)
     parser.add_argument("--training-json", default=TRAINING_JSON)
-    parser.add_argument("--contrastive-json", default=CONTRASTIVE_JSON)
     parser.add_argument("--benchmark-json", default=BENCHMARK_JSON)
     parser.add_argument("--output-dir", default=OUTPUT_DIR)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
@@ -49,42 +44,20 @@ def sanitize(value: str) -> str:
 
 
 def cases(args: argparse.Namespace) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
-    if args.model in {"both", "sft"}:
-        items.extend(
-            [
-                {
-                    "model": "sft",
-                    "dataset": "training_data",
-                    "checkpoint": args.training_checkpoint,
-                    "json": args.training_json,
-                },
-                {
-                    "model": "sft",
-                    "dataset": "benchmark_200",
-                    "checkpoint": args.training_checkpoint,
-                    "json": args.benchmark_json,
-                },
-            ]
-        )
-    if args.model in {"both", "contrastive"}:
-        items.extend(
-            [
-                {
-                    "model": "contrastive_sft",
-                    "dataset": "contrastive_training_data",
-                    "checkpoint": args.contrastive_checkpoint,
-                    "json": args.contrastive_json,
-                },
-                {
-                    "model": "contrastive_sft",
-                    "dataset": "benchmark_200",
-                    "checkpoint": args.contrastive_checkpoint,
-                    "json": args.benchmark_json,
-                },
-            ]
-        )
-    return items
+    return [
+        {
+            "model": "base_sft",
+            "dataset": "training_data",
+            "checkpoint": args.training_checkpoint,
+            "json": args.training_json,
+        },
+        {
+            "model": "base_sft",
+            "dataset": "benchmark_200",
+            "checkpoint": args.training_checkpoint,
+            "json": args.benchmark_json,
+        },
+    ]
 
 
 def run_eval(case: dict[str, str], args: argparse.Namespace, output_dir: Path) -> dict[str, Any]:
