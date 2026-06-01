@@ -218,6 +218,21 @@ eval_results/scenic_sft/em1_em5_check/em1_em5_summary.json
 eval_results/scenic_sft/em1_em5_check/em1_em5_summary.csv
 ```
 
+To evaluate the MLM-pretrained base encoder before SFT, use the base-model
+cloze scorer:
+
+```bash
+python scripts/check_scenic_base_model_em1_em5.py
+```
+
+This ranks candidate responses from `SCENIC_full_training_dataset.json` with
+masked-LM scores and writes:
+
+```text
+eval_results/scenic_base_model/em1_em5_check/base_model_em1_em5_summary.json
+eval_results/scenic_base_model/em1_em5_check/base_model_em1_em5_summary.csv
+```
+
 If you prefer not to pass CLI flags, edit the path block at the top of:
 
 ```text
