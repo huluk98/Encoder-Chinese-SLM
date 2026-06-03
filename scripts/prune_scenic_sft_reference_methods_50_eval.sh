@@ -22,7 +22,7 @@ PRUNE_DEVICE="${PRUNE_DEVICE:-auto}"
 PRUNE_DTYPE="${PRUNE_DTYPE:-fp32}"
 CALIBRATION_BATCH_SIZE="${CALIBRATION_BATCH_SIZE:-4}"
 CALIBRATION_BATCHES="${CALIBRATION_BATCHES:-64}"
-REINIT_CLASSIFIER="${REINIT_CLASSIFIER:-0}"
+REINIT_CLASSIFIER="${REINIT_CLASSIFIER:-1}"
 CLASSIFIER_INIT_BATCH_SIZE="${CLASSIFIER_INIT_BATCH_SIZE:-128}"
 CLASSIFIER_INIT_MAX_LENGTH="${CLASSIFIER_INIT_MAX_LENGTH:-128}"
 EVAL_DTYPE="${EVAL_DTYPE:-auto}"
@@ -58,6 +58,7 @@ method_names=()
 IFS=',' read -r -a method_names <<< "$METHODS"
 completed_methods=()
 
+echo "[reference-prune] reinit_classifier=$REINIT_CLASSIFIER"
 echo "[reference-prune] evaluating unpruned baseline checkpoints"
 python scripts/eval_scenic_sft_comparison.py \
   --benchmark-json "$BENCHMARK_JSON" \

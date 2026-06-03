@@ -403,29 +403,28 @@ METHODS=magnitude,nvidia,wanda,gradient ./scripts/prune_scenic_sft_reference_met
 PRUNE_SCOPE=encoder-linear ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 INCLUDE_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 CALIBRATION_BATCHES=128 CALIBRATION_BATCH_SIZE=8 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+REINIT_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 ```
 
 Because SCENIC encoder SFT is response selection, not generation, low accuracy
-after pruning cannot come from late stopping or missing EOS generation. To test
-whether pruning mostly broke the encoder/classifier alignment, rerun the suite
-with post-prune classifier reinitialization from response texts:
+after pruning cannot come from late stopping or missing EOS generation. The
+reference pruning launcher now reinitializes the dense response classifier from
+response texts after pruning by default, which tests whether pruning mostly broke
+the encoder/classifier alignment. The normal command is:
 
 ```bash
-REINIT_CLASSIFIER=1 \
-RUN_ROOT=runs/scenic-pruned50-reference-methods-reinit-classifier \
-ALL_OUTPUT_DIR=eval_results/scenic_sft/pruned50_reference_methods_reinit_classifier \
-OVERWRITE=1 \
 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 ```
 
 If this recovers accuracy, the main failure mode is classifier alignment after
 encoder pruning. If it does not, the pruned encoder representation itself has
-lost too much task information at that sparsity.
+lost too much task information at that sparsity. To reproduce the old no-reinit
+control, run with `REINIT_CLASSIFIER=0`.
 
 For the older apples-to-apples all-linear T5-style surface, use:
 
 ```bash
-PRUNE_SCOPE=all-linear INCLUDE_CLASSIFIER=1 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
+PRUNE_SCOPE=all-linear INCLUDE_CLASSIFIER=1 REINIT_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 ```
 
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
