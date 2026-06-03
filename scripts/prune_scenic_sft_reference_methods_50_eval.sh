@@ -22,6 +22,9 @@ PRUNE_DEVICE="${PRUNE_DEVICE:-auto}"
 PRUNE_DTYPE="${PRUNE_DTYPE:-fp32}"
 CALIBRATION_BATCH_SIZE="${CALIBRATION_BATCH_SIZE:-4}"
 CALIBRATION_BATCHES="${CALIBRATION_BATCHES:-64}"
+REINIT_CLASSIFIER="${REINIT_CLASSIFIER:-0}"
+CLASSIFIER_INIT_BATCH_SIZE="${CLASSIFIER_INIT_BATCH_SIZE:-128}"
+CLASSIFIER_INIT_MAX_LENGTH="${CLASSIFIER_INIT_MAX_LENGTH:-128}"
 EVAL_DTYPE="${EVAL_DTYPE:-auto}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 MAX_LENGTH="${MAX_LENGTH:-128}"
@@ -40,6 +43,15 @@ fi
 classifier_args=()
 if [[ "$INCLUDE_CLASSIFIER" != "1" ]]; then
   classifier_args+=(--exclude-classifier)
+fi
+
+reinit_classifier_args=()
+if [[ "$REINIT_CLASSIFIER" == "1" ]]; then
+  reinit_classifier_args+=(
+    --reinitialize-classifier-from-responses
+    --classifier-init-batch-size "$CLASSIFIER_INIT_BATCH_SIZE"
+    --classifier-init-max-length "$CLASSIFIER_INIT_MAX_LENGTH"
+  )
 fi
 
 method_names=()
@@ -104,7 +116,8 @@ for raw_method in "${method_names[@]}"; do
     --device "$PRUNE_DEVICE" \
     --dtype "$PRUNE_DTYPE" \
     "${overwrite_args[@]}" \
-    "${classifier_args[@]}"
+    "${classifier_args[@]}" \
+    "${reinit_classifier_args[@]}"
 
   echo "[reference-prune] $method | contrastive-anchor model -> $contrastive_output"
   python scripts/prune_scenic_sft_reference_methods.py \
@@ -120,7 +133,8 @@ for raw_method in "${method_names[@]}"; do
     --device "$PRUNE_DEVICE" \
     --dtype "$PRUNE_DTYPE" \
     "${overwrite_args[@]}" \
-    "${classifier_args[@]}"
+    "${classifier_args[@]}" \
+    "${reinit_classifier_args[@]}"
 
   echo "[reference-prune] evaluating $method outputs"
   python scripts/eval_scenic_sft_comparison.py \

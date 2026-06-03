@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from chatlm_encoder.scenic_sft import (  # noqa: E402
+    initialize_classifier_from_responses,
     load_scenic_checkpoint,
     prompt_from_row,
     read_json_list,
@@ -64,6 +65,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration-batch-size", type=int, default=CALIBRATION_BATCH_SIZE)
     parser.add_argument("--calibration-batches", type=int, default=CALIBRATION_BATCHES)
     parser.add_argument("--max-length", type=int, default=MAX_LENGTH)
+    parser.add_argument(
+        "--reinitialize-classifier-from-responses",
+        action="store_true",
+        help=(
+            "After pruning the encoder, rebuild the dense response classifier from "
+            "response-text embeddings encoded by the pruned model. This is a "
+            "research control for encoder/classifier alignment collapse."
+        ),
+    )
+    parser.add_argument(
+        "--classifier-init-batch-size",
+        type=int,
+        default=128,
+        help="Batch size for --reinitialize-classifier-from-responses.",
+    )
+    parser.add_argument(
+        "--classifier-init-max-length",
+        type=int,
+        default=128,
+        help="Tokenizer max length for response texts during classifier reinitialization.",
+    )
     parser.add_argument("--device", default="auto", help="auto, cuda, cuda:0, mps, or cpu.")
     parser.add_argument("--dtype", default="fp32", choices=("fp32", "bf16", "fp16"))
     parser.add_argument("--overwrite", action="store_true", help="Replace the output directory if it exists.")
@@ -366,6 +388,15 @@ def main() -> None:
     modules = selected_linear_modules(model, args.scope, include_classifier=include_classifier)
     if not modules:
         raise RuntimeError(f"No nn.Linear modules matched scope={args.scope!r}.")
+    classifier_targeted = any(
+        name.lower() == "classifier" or name.lower().startswith("classifier.")
+        for name, _module in modules
+    )
+    if args.reinitialize_classifier_from_responses and classifier_targeted:
+        raise ValueError(
+            "--reinitialize-classifier-from-responses cannot be combined with pruning "
+            "the classifier. Exclude the classifier or use scope=encoder-linear."
+        )
 
     activation_norms: dict[str, torch.Tensor] = {}
     gradient_saliency: dict[str, torch.Tensor] = {}
@@ -439,6 +470,17 @@ def main() -> None:
                 }
             )
 
+    if args.reinitialize_classifier_from_responses:
+        initialize_classifier_from_responses(
+            model=model,
+            tokenizer=tokenizer,
+            label2response=label2response,
+            device=device,
+            max_length=int(args.classifier_init_max_length),
+            batch_size=int(args.classifier_init_batch_size),
+        )
+        model.eval()
+
     model_after = parameter_totals(all_parameters)
     target_after = parameter_totals(target_parameters)
     metadata = read_metadata(checkpoint_dir)
@@ -467,6 +509,17 @@ def main() -> None:
         "pooling": model.pooling,
         "normalize_logits": model.normalize_logits,
         "logit_scale": model.logit_scale,
+        "classifier_reinitialized_after_pruning": bool(args.reinitialize_classifier_from_responses),
+        "classifier_init_batch_size": (
+            int(args.classifier_init_batch_size)
+            if args.reinitialize_classifier_from_responses
+            else None
+        ),
+        "classifier_init_max_length": (
+            int(args.classifier_init_max_length)
+            if args.reinitialize_classifier_from_responses
+            else None
+        ),
         "targeted_tensors": len(modules),
         "pruned_tensors": pruned_tensors,
         "targeted_parameters": target_after["numel"],
