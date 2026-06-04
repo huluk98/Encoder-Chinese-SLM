@@ -292,6 +292,19 @@ eval_results/scenic_sft/pruned50_comparison/comparison_summary.csv
 eval_results/scenic_sft/pruned50_comparison/comparison_groups.csv
 ```
 
+To independently verify active/nonzero parameters from the saved pruned
+checkpoint tensors, run:
+
+```bash
+python scripts/audit_scenic_active_parameters.py
+```
+
+The audit reloads each checkpoint and recomputes `tensor != 0` counts directly,
+then cross-checks `targeted_*` and `model_*` sparsity fields against
+`prune_summary.json` when present. If no checkpoint paths are provided, it
+auto-discovers generated pruned SCENIC checkpoints under `runs/` and writes
+`eval_results/scenic_sft/active_parameters_audit.json`.
+
 Use `comparison_summary.csv` for the main table. The `benchmark_200` rows are the SCENIC benchmark outcomes. The `training_dataset_retention` and `contrastive_anchor_retention` rows are the original-data retention outcomes.
 
 Useful overrides:
@@ -381,6 +394,12 @@ The combined comparison table is written to:
 eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.csv
 eval_results/scenic_sft/pruned50_reference_methods/reference_methods_summary.json
 eval_results/scenic_sft/pruned50_reference_methods/reference_methods_debug_report.json
+```
+
+Audit active/nonzero parameters in the generated reference-method checkpoints:
+
+```bash
+python scripts/audit_scenic_active_parameters.py
 ```
 
 The final summary is validated across all requested methods. With the default
