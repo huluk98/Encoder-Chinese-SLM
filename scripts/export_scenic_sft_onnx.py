@@ -103,6 +103,7 @@ def export_fp32(
 ) -> dict[str, Any]:
     onnx = require_module("onnx")
     model, tokenizer, label2response = load_scenic_checkpoint(checkpoint, device="cpu")
+    model.to(device="cpu", dtype=torch.float32)
     if hasattr(model.encoder, "config") and hasattr(model.encoder.config, "_attn_implementation"):
         model.encoder.config._attn_implementation = "eager"
     model.eval()

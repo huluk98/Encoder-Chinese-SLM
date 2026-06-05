@@ -115,6 +115,8 @@ class ScenicEncoderForResponseSelection(nn.Module):
 
     def classify(self, embeddings: torch.Tensor) -> torch.Tensor:
         embeddings = self.dropout(embeddings)
+        if embeddings.is_floating_point() and embeddings.dtype != self.classifier.weight.dtype:
+            embeddings = embeddings.to(dtype=self.classifier.weight.dtype)
         if not self.normalize_logits:
             return self.classifier(embeddings)
         normalized_embeddings = nn.functional.normalize(embeddings, dim=-1)
