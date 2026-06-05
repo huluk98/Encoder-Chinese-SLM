@@ -26,8 +26,8 @@ EPOCHS="${EPOCHS:-5}"
 MAX_LENGTH="${MAX_LENGTH:-128}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 OPSET="${OPSET:-17}"
-PROVIDERS="${PROVIDERS:-auto}"
-FP16_EXPORT_DEVICE="${FP16_EXPORT_DEVICE:-auto}"
+PROVIDERS="${PROVIDERS:-cuda}"
+FP16_EXPORT_DEVICE="${FP16_EXPORT_DEVICE:-cuda}"
 RUN_EDGE_BENCHMARK="${RUN_EDGE_BENCHMARK:-1}"
 EDGE_ROOT="${EDGE_ROOT:-$EVAL_ROOT/edge_runtime}"
 EDGE_INPUT_LENGTH="${EDGE_INPUT_LENGTH:-64}"
@@ -35,10 +35,13 @@ EDGE_BATCH_SIZE="${EDGE_BATCH_SIZE:-1}"
 EDGE_WARMUP_QUERIES="${EDGE_WARMUP_QUERIES:-20}"
 EDGE_MEASURE_QUERIES="${EDGE_MEASURE_QUERIES:-200}"
 EDGE_PROVIDERS="${EDGE_PROVIDERS:-$PROVIDERS}"
+PARALLEL_GPU_EVAL="${PARALLEL_GPU_EVAL:-1}"
+PARALLEL_GPU_BENCHMARK="${PARALLEL_GPU_BENCHMARK:-1}"
 
 TRAIN_WITH_TORCHRUN="${TRAIN_WITH_TORCHRUN:-1}"
 NPROC="${NPROC:-8}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+GPU_IDS="${GPU_IDS:-$CUDA_VISIBLE_DEVICES}"
 RETRAIN="${RETRAIN:-1}"
 OVERWRITE="${OVERWRITE:-1}"
 
@@ -51,6 +54,49 @@ CLASSIFIER_INIT_MAX_LENGTH="${CLASSIFIER_INIT_MAX_LENGTH:-128}"
 
 mkdir -p "$RUN_ROOT" "$ONNX_ROOT" "$EVAL_ROOT" "$EDGE_ROOT"
 
+GPU_ID_LIST=()
+
+parse_gpu_ids() {
+  local raw="$1"
+  local part
+  local IFS=','
+  read -ra GPU_ID_LIST <<< "$raw"
+  for index in "${!GPU_ID_LIST[@]}"; do
+    part="${GPU_ID_LIST[$index]}"
+    GPU_ID_LIST[$index]="${part//[[:space:]]/}"
+  done
+  local compact=()
+  for part in "${GPU_ID_LIST[@]}"; do
+    if [[ -n "$part" ]]; then
+      compact+=("$part")
+    fi
+  done
+  GPU_ID_LIST=("${compact[@]}")
+  if [[ "${#GPU_ID_LIST[@]}" -eq 0 ]]; then
+    echo "[encoder-only-fp16-int8] GPU_IDS resolved to no GPUs: $raw" >&2
+    exit 2
+  fi
+}
+
+gpu_for_job() {
+  local job_index="$1"
+  echo "${GPU_ID_LIST[$((job_index % ${#GPU_ID_LIST[@]}))]}"
+}
+
+wait_for_jobs() {
+  local failed=0
+  local pid
+  for pid in "$@"; do
+    if ! wait "$pid"; then
+      failed=1
+    fi
+  done
+  if [[ "$failed" != "0" ]]; then
+    echo "[encoder-only-fp16-int8] one or more GPU jobs failed" >&2
+    exit 1
+  fi
+}
+
 require_path() {
   local path="$1"
   local label="$2"
@@ -61,10 +107,11 @@ require_path() {
 }
 
 check_dependencies() {
-  python - <<'PY'
+  python - "$PROVIDERS" "$EDGE_PROVIDERS" "$FP16_EXPORT_DEVICE" "$GPU_IDS" <<'PY'
 import importlib
 import sys
 
+providers, edge_providers, fp16_export_device, gpu_ids = sys.argv[1:]
 required = [("onnx", "onnx"), ("onnxruntime", "onnxruntime")]
 missing = []
 for module_name, package_name in required:
@@ -77,6 +124,48 @@ if missing:
     print("[encoder-only-fp16-int8] missing: " + ", ".join(missing), file=sys.stderr)
     print("[encoder-only-fp16-int8] install with: pip install " + " ".join(missing), file=sys.stderr)
     sys.exit(1)
+
+import onnxruntime as ort
+import torch
+
+available = set(ort.get_available_providers())
+for label, requested in (("PROVIDERS", providers), ("EDGE_PROVIDERS", edge_providers)):
+    if requested == "cuda" and "CUDAExecutionProvider" not in available:
+        print(
+            f"[encoder-only-fp16-int8] {label}=cuda but ONNX Runtime has providers: "
+            + ", ".join(sorted(available)),
+            file=sys.stderr,
+        )
+        print("[encoder-only-fp16-int8] install/use onnxruntime-gpu for the real GPU run.", file=sys.stderr)
+        sys.exit(1)
+    if requested == "tensorrt" and "TensorrtExecutionProvider" not in available:
+        print(
+            f"[encoder-only-fp16-int8] {label}=tensorrt but TensorRT EP is unavailable.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+if fp16_export_device == "cuda" and not torch.cuda.is_available():
+    print("[encoder-only-fp16-int8] FP16_EXPORT_DEVICE=cuda but torch.cuda is unavailable.", file=sys.stderr)
+    sys.exit(1)
+
+if providers == "cuda" or edge_providers == "cuda" or fp16_export_device == "cuda":
+    requested_gpu_count = len([part.strip() for part in gpu_ids.split(",") if part.strip()])
+    visible_gpu_count = torch.cuda.device_count()
+    if visible_gpu_count <= 0:
+        print("[encoder-only-fp16-int8] no CUDA GPUs are visible to PyTorch.", file=sys.stderr)
+        sys.exit(1)
+    if requested_gpu_count > visible_gpu_count:
+        print(
+            f"[encoder-only-fp16-int8] GPU_IDS asks for {requested_gpu_count} GPUs, "
+            f"but PyTorch sees {visible_gpu_count}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+print("[encoder-only-fp16-int8] onnxruntime providers: " + ", ".join(ort.get_available_providers()))
+if torch.cuda.is_available():
+    print(f"[encoder-only-fp16-int8] torch cuda devices visible: {torch.cuda.device_count()}")
 PY
 }
 
@@ -203,6 +292,16 @@ eval_variant() {
     --providers "$PROVIDERS"
 }
 
+eval_variant_on_gpu() {
+  local gpu_id="$1"
+  shift
+  echo "[encoder-only-fp16-int8] assign GPU $gpu_id for eval $1 on $4"
+  (
+    export CUDA_VISIBLE_DEVICES="$gpu_id"
+    eval_variant "$@"
+  )
+}
+
 benchmark_variant() {
   local variant="$1"
   local precision="$2"
@@ -224,6 +323,68 @@ benchmark_variant() {
     --warmup-queries "$EDGE_WARMUP_QUERIES" \
     --measure-queries "$EDGE_MEASURE_QUERIES" \
     --providers "$EDGE_PROVIDERS"
+}
+
+benchmark_variant_on_gpu() {
+  local gpu_id="$1"
+  shift
+  echo "[encoder-only-fp16-int8] assign GPU $gpu_id for benchmark $1"
+  (
+    export CUDA_VISIBLE_DEVICES="$gpu_id"
+    benchmark_variant "$@"
+  )
+}
+
+run_accuracy_evals() {
+  if [[ "$PARALLEL_GPU_EVAL" == "1" ]]; then
+    local pids=()
+    local job_index=0
+    local spec
+    for spec in "${variant_specs[@]}"; do
+      IFS='|' read -r variant _precision checkpoint onnx_path <<< "$spec"
+      gpu_id="$(gpu_for_job "$job_index")"
+      eval_variant_on_gpu "$gpu_id" "$variant" "$checkpoint" "$onnx_path" "benchmark_200" "$BENCHMARK_JSON" &
+      pids+=("$!")
+      job_index=$((job_index + 1))
+
+      gpu_id="$(gpu_for_job "$job_index")"
+      eval_variant_on_gpu "$gpu_id" "$variant" "$checkpoint" "$onnx_path" "training_retention" "$TRAIN_JSON" &
+      pids+=("$!")
+      job_index=$((job_index + 1))
+    done
+    wait_for_jobs "${pids[@]}"
+    return
+  fi
+
+  local spec
+  for spec in "${variant_specs[@]}"; do
+    IFS='|' read -r variant _precision checkpoint onnx_path <<< "$spec"
+    eval_variant "$variant" "$checkpoint" "$onnx_path" "benchmark_200" "$BENCHMARK_JSON"
+    eval_variant "$variant" "$checkpoint" "$onnx_path" "training_retention" "$TRAIN_JSON"
+  done
+}
+
+run_edge_benchmarks() {
+  if [[ "$PARALLEL_GPU_BENCHMARK" == "1" ]]; then
+    local pids=()
+    local job_index=0
+    local spec
+    for spec in "${variant_specs[@]}"; do
+      IFS='|' read -r variant precision checkpoint onnx_path <<< "$spec"
+      gpu_id="$(gpu_for_job "$job_index")"
+      benchmark_variant_on_gpu "$gpu_id" "$variant" "$precision" "$checkpoint" "$onnx_path" &
+      pids+=("$!")
+      job_index=$((job_index + 1))
+    done
+    wait_for_jobs "${pids[@]}"
+    return
+  fi
+
+  local spec
+  for spec in "${variant_specs[@]}"; do
+    IFS='|' read -r variant precision checkpoint onnx_path <<< "$spec"
+    benchmark_variant "$variant" "$precision" "$checkpoint" "$onnx_path"
+  done
 }
 
 aggregate_table() {
@@ -377,6 +538,7 @@ require_path "$BASE_ENCODER" "base encoder checkpoint"
 require_path "$TEMPLATE_CONFIG" "template SFT config"
 require_path "$TRAIN_JSON" "training json"
 require_path "$BENCHMARK_JSON" "benchmark json"
+parse_gpu_ids "$GPU_IDS"
 check_dependencies
 write_sft_config
 train_sft
@@ -395,17 +557,10 @@ for spec in "${variant_specs[@]}"; do
   export_variant "$variant" "$precision" "$checkpoint" "$onnx_path"
 done
 
-for spec in "${variant_specs[@]}"; do
-  IFS='|' read -r variant _precision checkpoint onnx_path <<< "$spec"
-  eval_variant "$variant" "$checkpoint" "$onnx_path" "benchmark_200" "$BENCHMARK_JSON"
-  eval_variant "$variant" "$checkpoint" "$onnx_path" "training_retention" "$TRAIN_JSON"
-done
+run_accuracy_evals
 
 if [[ "$RUN_EDGE_BENCHMARK" == "1" ]]; then
-  for spec in "${variant_specs[@]}"; do
-    IFS='|' read -r variant precision checkpoint onnx_path <<< "$spec"
-    benchmark_variant "$variant" "$precision" "$checkpoint" "$onnx_path"
-  done
+  run_edge_benchmarks
 fi
 
 aggregate_table

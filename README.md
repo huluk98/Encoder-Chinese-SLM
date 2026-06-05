@@ -463,8 +463,8 @@ use:
 
 This writes a generated 5-epoch SFT config, trains the encoder-only SCENIC SFT
 model, applies NVIDIA 2:4 pruning, exports only ONNX FP16 and ONNX INT8 dense
-and pruned variants, evaluates benchmark/training EM@1 and EM@5, runs ONNX
-batch-1 latency checks by default, and writes:
+and pruned variants, evaluates benchmark/training EM@1 and EM@5 on CUDA, runs
+ONNX batch-1 latency checks by default, and writes:
 
 ```text
 eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.json
@@ -478,9 +478,14 @@ Useful overrides for the simple run:
 TOKENIZER_PATH=/path/to/tokenizer ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 TRAIN_WITH_TORCHRUN=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 RETRAIN=0 OVERWRITE=1 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
-FP16_EXPORT_DEVICE=cuda PROVIDERS=cuda ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+GPU_IDS=0,1,2,3,4,5,6,7 PROVIDERS=cuda EDGE_PROVIDERS=cuda ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 RUN_EDGE_BENCHMARK=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+PROVIDERS=auto EDGE_PROVIDERS=auto FP16_EXPORT_DEVICE=auto PARALLEL_GPU_EVAL=0 PARALLEL_GPU_BENCHMARK=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 ```
+
+The real evaluation defaults require `onnxruntime-gpu`, exports FP16 on CUDA,
+and fans out the eight accuracy jobs across `GPU_IDS`: dense/pruned FP16/INT8
+times benchmark/training retention.
 
 The existing-checkpoint ONNX helper uses the training-dataset SFT checkpoint by
 default, builds or reuses one encoder-linear NVIDIA 2:4 checkpoint with the
