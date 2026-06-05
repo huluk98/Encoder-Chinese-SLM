@@ -21,6 +21,7 @@ CHECKPOINT_DIR = "runs/scenic-sft-training-dataset/latest"
 OUTPUT_ONNX = "runs/scenic-onnx-nvidia/onnx/fp16_dense/model.onnx"
 MAX_LENGTH = 128
 OPSET = 17
+FLOAT_ELEMWISE_OPS = {"Add", "Sub", "Mul", "Div", "Pow", "Max", "Min"}
 
 
 class ScenicOnnxWrapper(nn.Module):
@@ -136,6 +137,176 @@ def export_fp32(
     }
 
 
+def tensor_elem_type(value: Any) -> int | None:
+    tensor_type = getattr(getattr(value, "type", None), "tensor_type", None)
+    if tensor_type is None:
+        return None
+    elem_type = int(getattr(tensor_type, "elem_type", 0))
+    return elem_type or None
+
+
+def collect_value_types(model: Any) -> dict[str, int]:
+    from onnx import TensorProto
+
+    graph = model.graph
+    value_types: dict[str, int] = {
+        initializer.name: int(initializer.data_type)
+        for initializer in graph.initializer
+        if initializer.name
+    }
+    for value in list(graph.input) + list(graph.value_info) + list(graph.output):
+        elem_type = tensor_elem_type(value)
+        if elem_type is not None and value.name:
+            value_types[value.name] = elem_type
+
+    for node in graph.node:
+        if node.op_type == "Constant" and node.output:
+            for attribute in node.attribute:
+                if attribute.name == "value":
+                    value_types[node.output[0]] = int(attribute.t.data_type)
+                elif attribute.name == "value_float":
+                    value_types[node.output[0]] = TensorProto.FLOAT
+                elif attribute.name == "value_floats":
+                    value_types[node.output[0]] = TensorProto.FLOAT
+        elif node.op_type == "Cast" and node.output:
+            for attribute in node.attribute:
+                if attribute.name == "to":
+                    value_types[node.output[0]] = int(attribute.i)
+                    break
+    return value_types
+
+
+def constant_producers(model: Any) -> dict[str, Any]:
+    return {
+        node.output[0]: node
+        for node in model.graph.node
+        if node.op_type == "Constant" and node.output
+    }
+
+
+def initializer_map(model: Any) -> dict[str, Any]:
+    return {initializer.name: initializer for initializer in model.graph.initializer}
+
+
+def convert_initializer_float_to_fp16(model: Any, name: str) -> bool:
+    from onnx import TensorProto, numpy_helper
+
+    initializers = initializer_map(model)
+    initializer = initializers.get(name)
+    if initializer is None or initializer.data_type != TensorProto.FLOAT:
+        return False
+    converted = numpy_helper.from_array(numpy_helper.to_array(initializer).astype("float16"), name=name)
+    initializer.CopyFrom(converted)
+    return True
+
+
+def replace_constant_attributes_with_fp16_tensor(node: Any, values: Any) -> None:
+    from onnx import helper, numpy_helper
+    import numpy as np
+
+    tensor = numpy_helper.from_array(np.asarray(values, dtype=np.float16))
+    del node.attribute[:]
+    node.attribute.extend([helper.make_attribute("value", tensor)])
+
+
+def convert_constant_float_to_fp16(node: Any) -> bool:
+    from onnx import TensorProto, numpy_helper
+    import numpy as np
+
+    for attribute in node.attribute:
+        if attribute.name == "value" and attribute.t.data_type == TensorProto.FLOAT:
+            converted = numpy_helper.from_array(numpy_helper.to_array(attribute.t).astype("float16"))
+            attribute.t.CopyFrom(converted)
+            return True
+        if attribute.name == "value_float":
+            replace_constant_attributes_with_fp16_tensor(node, np.asarray(attribute.f, dtype=np.float16))
+            return True
+        if attribute.name == "value_floats":
+            replace_constant_attributes_with_fp16_tensor(node, np.asarray(list(attribute.floats), dtype=np.float16))
+            return True
+    return False
+
+
+def unique_graph_name(model: Any, prefix: str) -> str:
+    used = {
+        value.name
+        for value in list(model.graph.input) + list(model.graph.value_info) + list(model.graph.output)
+        if value.name
+    }
+    used.update(initializer.name for initializer in model.graph.initializer if initializer.name)
+    for node in model.graph.node:
+        used.update(name for name in node.input if name)
+        used.update(name for name in node.output if name)
+
+    candidate = prefix
+    index = 0
+    while candidate in used:
+        index += 1
+        candidate = f"{prefix}_{index}"
+    return candidate
+
+
+def repair_fp16_binary_op_inputs(model: Any) -> int:
+    from onnx import TensorProto, helper
+
+    value_types = collect_value_types(model)
+    constants = constant_producers(model)
+    repairs = 0
+    repaired_nodes = []
+
+    for node in model.graph.node:
+        if node.op_type not in FLOAT_ELEMWISE_OPS or len(node.input) < 2:
+            repaired_nodes.append(node)
+            continue
+
+        input_types = [value_types.get(name) for name in node.input if name]
+        if TensorProto.FLOAT16 not in input_types or TensorProto.FLOAT not in input_types:
+            repaired_nodes.append(node)
+            continue
+
+        for index, name in enumerate(node.input):
+            if not name or value_types.get(name) != TensorProto.FLOAT:
+                continue
+            if convert_initializer_float_to_fp16(model, name):
+                value_types[name] = TensorProto.FLOAT16
+                repairs += 1
+                continue
+            constant = constants.get(name)
+            if constant is not None and convert_constant_float_to_fp16(constant):
+                value_types[name] = TensorProto.FLOAT16
+                repairs += 1
+                continue
+
+            cast_output = unique_graph_name(model, f"{name}_fp16")
+            cast_node = helper.make_node(
+                "Cast",
+                inputs=[name],
+                outputs=[cast_output],
+                name=unique_graph_name(model, f"{node.name or node.op_type}_cast_input_{index}"),
+                to=TensorProto.FLOAT16,
+            )
+            repaired_nodes.append(cast_node)
+            node.input[index] = cast_output
+            value_types[cast_output] = TensorProto.FLOAT16
+            repairs += 1
+
+        repaired_nodes.append(node)
+
+    if repairs:
+        del model.graph.node[:]
+        model.graph.node.extend(repaired_nodes)
+        model.graph.ClearField("value_info")
+    return repairs
+
+
+def validate_onnxruntime_load(path: Path) -> None:
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+    ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+
+
 def convert_fp16(fp32_path: Path, output: Path) -> None:
     require_module("onnx")
     try:
@@ -157,8 +328,12 @@ def convert_fp16(fp32_path: Path, output: Path) -> None:
     except TypeError:
         model_fp16 = float16.convert_float_to_float16(model, keep_io_types=False)
     model_fp16.graph.ClearField("value_info")
+    repairs = repair_fp16_binary_op_inputs(model_fp16)
     onnx.save(model_fp16, str(output))
     onnx.checker.check_model(onnx.load(str(output)))
+    validate_onnxruntime_load(output)
+    if repairs:
+        print(f"fp16_binary_input_repairs: {repairs}")
 
 
 def convert_int8(fp32_path: Path, output: Path) -> None:

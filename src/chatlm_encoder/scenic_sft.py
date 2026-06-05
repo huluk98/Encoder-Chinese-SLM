@@ -121,7 +121,8 @@ class ScenicEncoderForResponseSelection(nn.Module):
             return self.classifier(embeddings)
         normalized_embeddings = nn.functional.normalize(embeddings, dim=-1)
         normalized_weights = nn.functional.normalize(self.classifier.weight, dim=-1)
-        logits = nn.functional.linear(normalized_embeddings, normalized_weights) * self.logit_scale
+        logits = nn.functional.linear(normalized_embeddings, normalized_weights)
+        logits = logits * logits.new_tensor(self.logit_scale)
         if self.classifier.bias is not None:
             logits = logits + self.classifier.bias
         return logits
