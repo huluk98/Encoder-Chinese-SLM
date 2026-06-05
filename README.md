@@ -475,7 +475,9 @@ eval_results/scenic_sft/onnx_nvidia/onnx_nvidia_summary.json
 eval_results/scenic_sft/onnx_nvidia/onnx_nvidia_summary.csv
 ```
 
-The FP16 edge-inference report is written to:
+The default runner only exports/evaluates ONNX FP16 and ONNX INT8 variants.
+The extra PyTorch/TensorRT edge report is opt-in. If enabled with
+`RUN_EDGE_BENCHMARK=1`, it is written to:
 
 ```text
 eval_results/scenic_sft/onnx_nvidia/edge_fp16_report.json
@@ -508,8 +510,8 @@ PROVIDERS=cuda ./scripts/run_scenic_onnx_nvidia_eval.sh
 REBUILD_PRUNED=1 ./scripts/run_scenic_onnx_nvidia_eval.sh
 DENSE_CHECKPOINT=/path/to/checkpoint ./scripts/run_scenic_onnx_nvidia_eval.sh
 RUN_INT8=0 ./scripts/run_scenic_onnx_nvidia_eval.sh
-EDGE_INPUT_LENGTHS=128 EDGE_MEASURE_QUERIES=1000 ./scripts/run_scenic_onnx_nvidia_eval.sh
-RUN_TENSORRT=1 ./scripts/run_scenic_onnx_nvidia_eval.sh
+RUN_EDGE_BENCHMARK=1 EDGE_INPUT_LENGTHS=128 EDGE_MEASURE_QUERIES=1000 ./scripts/run_scenic_onnx_nvidia_eval.sh
+RUN_EDGE_BENCHMARK=1 RUN_TENSORRT=1 ./scripts/run_scenic_onnx_nvidia_eval.sh
 ```
 
 The INT8 variants use ONNX Runtime dynamic weight quantization. The NVIDIA 2:4

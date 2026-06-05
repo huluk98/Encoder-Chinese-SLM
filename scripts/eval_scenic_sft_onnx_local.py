@@ -214,6 +214,8 @@ def main() -> None:
                 if name in input_names
             }
             logits = session.run(["logits"], feed)[0]
+            if np.issubdtype(logits.dtype, np.floating):
+                logits = logits.astype(np.float32, copy=False)
             top_indices, probabilities = softmax_topk(logits, k=5)
 
             for item, top_ids, top_probs in zip(batch, top_indices.tolist(), probabilities.tolist()):

@@ -148,7 +148,15 @@ def convert_fp16(fp32_path: Path, output: Path) -> None:
     import onnx
 
     model = onnx.load(str(fp32_path))
-    model_fp16 = float16.convert_float_to_float16(model, keep_io_types=True)
+    try:
+        model_fp16 = float16.convert_float_to_float16(
+            model,
+            keep_io_types=False,
+            disable_shape_infer=True,
+        )
+    except TypeError:
+        model_fp16 = float16.convert_float_to_float16(model, keep_io_types=False)
+    model_fp16.graph.ClearField("value_info")
     onnx.save(model_fp16, str(output))
     onnx.checker.check_model(onnx.load(str(output)))
 
