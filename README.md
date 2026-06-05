@@ -482,6 +482,7 @@ The extra PyTorch/TensorRT edge report is opt-in. If enabled with
 ```text
 eval_results/scenic_sft/onnx_nvidia/edge_fp16_report.json
 eval_results/scenic_sft/onnx_nvidia/edge_fp16_report.csv
+eval_results/scenic_sft/onnx_nvidia/fp16_deployment_table.tex
 ```
 
 That report is batch-size 1 by default and includes:
@@ -496,6 +497,41 @@ That report is batch-size 1 by default and includes:
 - source model/ONNX size, plus TensorRT engine-cache size when available
 - benchmark EM@1 and EM@5 on the 200-row benchmark
 - fixed input length, defaulting to both 64 and 128
+
+The LaTeX table is rendered in the final paper format:
+
+```tex
+\begin{table}[t]
+\centering
+\caption{FP16 Deployment Feasibility Across Compact Architectures}
+\label{tab:fp16_deployment}
+\begin{tabular}{lcccccc}
+\hline
+Architecture & Runtime & Seq. Len. & Latency & P95 Lat. & Memory & EM@1/EM@5 \\
+\hline
+Encoder-only & PyTorch & 64  & -- & -- & -- & -- \\
+Encoder-only & TensorRT & 64  & -- & -- & -- & -- \\
+Decoder-only & PyTorch & 64  & -- & -- & -- & -- \\
+Decoder-only & TensorRT & 64  & -- & -- & -- & -- \\
+Encoder--decoder & PyTorch & 64  & -- & -- & -- & -- \\
+Encoder--decoder & TensorRT & 64  & -- & -- & -- & -- \\
+\hline
+\end{tabular}
+\end{table}
+```
+
+Run the renderer directly if you need to rebuild only the table:
+
+```bash
+python scripts/render_fp16_deployment_table.py \
+  --encoder-report eval_results/scenic_sft/onnx_nvidia/edge_fp16_report.json \
+  --seq-len 64 \
+  --output eval_results/scenic_sft/onnx_nvidia/fp16_deployment_table.tex
+```
+
+The encoder-only rows are filled from the encoder FP16 edge report when present.
+Decoder-only and encoder-decoder rows remain `--` unless you pass matching
+reports with `--decoder-report` and `--encoder-decoder-report`.
 
 The exported ONNX files are written under:
 

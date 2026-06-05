@@ -508,6 +508,10 @@ if [[ "$RUN_EDGE_BENCHMARK" == "1" ]]; then
   done
 
   aggregate_edge_report
+  python scripts/render_fp16_deployment_table.py \
+    --encoder-report "$EVAL_ROOT/edge_fp16_report.json" \
+    --seq-len 64 \
+    --output "$EVAL_ROOT/fp16_deployment_table.tex"
 fi
 
 echo "[onnx-nvidia] done"
@@ -516,4 +520,5 @@ echo "  $EVAL_ROOT/onnx_nvidia_summary.csv"
 if [[ "$RUN_EDGE_BENCHMARK" == "1" ]]; then
   echo "  $EVAL_ROOT/edge_fp16_report.json"
   echo "  $EVAL_ROOT/edge_fp16_report.csv"
+  echo "  $EVAL_ROOT/fp16_deployment_table.tex"
 fi
