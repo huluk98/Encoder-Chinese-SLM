@@ -9,49 +9,86 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-import torch
+import numpy as np
 from tqdm.auto import tqdm
+from transformers import AutoTokenizer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from chatlm_encoder.scenic_sft import ensure_token_type_ids, load_scenic_checkpoint, prompt_from_row, read_json_list  # noqa: E402
+from chatlm_encoder.scenic_sft import prompt_from_row, read_json_list  # noqa: E402
 
 
-# Edit these paths if you want to run the evaluator without command-line flags.
 LOCAL_JSON_PATH = "data/scenic/iot_instruction_benchmark_200.json"
 CHECKPOINT_DIR = "runs/scenic-sft-training-dataset/latest"
-OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_predictions.jsonl"
-SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/benchmark_200_summary.json"
+ONNX_MODEL = "runs/scenic-onnx-nvidia/onnx/fp16_dense/model.onnx"
+OUTPUT_PATH = "eval_results/scenic_sft/onnx_nvidia/fp16_dense/benchmark_predictions.jsonl"
+SUMMARY_OUTPUT_PATH = "eval_results/scenic_sft/onnx_nvidia/fp16_dense/benchmark_summary.json"
 MAX_LENGTH = 128
 BATCH_SIZE = 128
-EVAL_DTYPE = "auto"
 GROUP_FIELDS = ("difficulty", "task_type", "source")
 
 
-def select_device() -> torch.device:
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate a SCENIC encoder SFT ONNX response selector.")
+    parser.add_argument("--json", default=LOCAL_JSON_PATH, help="Local JSON list with prompt/response or anchor/response rows.")
+    parser.add_argument("--checkpoint", default=CHECKPOINT_DIR, help="SCENIC checkpoint directory for tokenizer and labels.")
+    parser.add_argument("--onnx", default=ONNX_MODEL, help="ONNX model path.")
+    parser.add_argument("--output", default=OUTPUT_PATH, help="Prediction JSONL output path.")
+    parser.add_argument("--summary-output", default=SUMMARY_OUTPUT_PATH, help="Summary JSON output path.")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--max-length", type=int, default=MAX_LENGTH)
+    parser.add_argument(
+        "--providers",
+        default="auto",
+        choices=("auto", "cpu", "cuda", "tensorrt"),
+        help="ONNX Runtime execution providers.",
+    )
+    parser.add_argument(
+        "--trt-engine-cache-dir",
+        default=None,
+        help="Optional TensorRT EP engine cache directory when --providers tensorrt is used.",
+    )
+    return parser.parse_args()
 
 
-def resolve_eval_dtype(dtype_name: str, device: torch.device) -> torch.dtype:
-    dtype_name = str(dtype_name).lower()
-    if dtype_name == "auto":
-        return torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
-    if dtype_name in {"fp32", "float32"}:
-        return torch.float32
-    if dtype_name in {"bf16", "bfloat16"}:
-        if device.type != "cuda":
-            raise ValueError("--dtype bf16 is only supported for CUDA evaluation in this script.")
-        return torch.bfloat16
-    if dtype_name in {"fp16", "float16"}:
-        if device.type != "cuda":
-            raise ValueError("--dtype fp16 is only supported for CUDA evaluation in this script.")
-        return torch.float16
-    raise ValueError(f"Unknown dtype: {dtype_name}. Use auto, fp32, bf16, or fp16.")
+def require_onnxruntime():
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise SystemExit("Missing optional dependency 'onnxruntime'. Install it with: pip install onnxruntime") from exc
+    return ort
+
+
+def providers_for(ort: Any, requested: str, trt_engine_cache_dir: str | None = None) -> list[Any]:
+    available = set(ort.get_available_providers())
+    if requested == "cpu":
+        return ["CPUExecutionProvider"]
+    if requested == "cuda":
+        if "CUDAExecutionProvider" not in available:
+            raise ValueError("CUDAExecutionProvider is not available in this onnxruntime install.")
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    if requested == "tensorrt":
+        if "TensorrtExecutionProvider" not in available:
+            raise ValueError("TensorrtExecutionProvider is not available in this onnxruntime install.")
+        options = {"trt_fp16_enable": "1"}
+        if trt_engine_cache_dir:
+            cache_dir = Path(trt_engine_cache_dir).expanduser()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            options.update(
+                {
+                    "trt_engine_cache_enable": "1",
+                    "trt_engine_cache_path": str(cache_dir),
+                }
+            )
+        providers: list[Any] = [("TensorrtExecutionProvider", options)]
+        if "CUDAExecutionProvider" in available:
+            providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
+        return providers
+    if "CUDAExecutionProvider" in available:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def load_eval_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -65,9 +102,38 @@ def load_eval_rows(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
+def load_labels(checkpoint: str | Path) -> list[str]:
+    path = Path(checkpoint).expanduser() / "label2response.json"
+    labels = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(labels, list):
+        raise ValueError(f"{path} must contain a JSON list.")
+    return [str(item) for item in labels]
+
+
 def batched(items: list[dict[str, Any]], batch_size: int):
     for start in range(0, len(items), batch_size):
         yield items[start : start + batch_size]
+
+
+def ensure_token_type_ids(encoded: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    if "token_type_ids" not in encoded:
+        encoded["token_type_ids"] = np.zeros_like(encoded["input_ids"], dtype=np.int64)
+    return encoded
+
+
+def softmax_topk(logits: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    k = min(k, logits.shape[-1])
+    partition = np.argpartition(-logits, kth=k - 1, axis=-1)[:, :k]
+    partition_scores = np.take_along_axis(logits, partition, axis=-1)
+    order = np.argsort(-partition_scores, axis=-1)
+    top_indices = np.take_along_axis(partition, order, axis=-1)
+    top_logits = np.take_along_axis(logits, top_indices, axis=-1)
+
+    shifted = logits - logits.max(axis=-1, keepdims=True)
+    exp = np.exp(shifted)
+    denom = exp.sum(axis=-1, keepdims=True)
+    probabilities = np.take_along_axis(exp / denom, top_indices, axis=-1)
+    return top_indices, probabilities
 
 
 def new_metric_bucket() -> dict[str, int]:
@@ -101,23 +167,21 @@ def summarize_bucket(bucket: dict[str, int]) -> dict[str, int | float | None]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate a SCENIC encoder SFT checkpoint on a local JSON file.")
-    parser.add_argument("--json", default=LOCAL_JSON_PATH, help="Local JSON list with prompt/response or anchor/response rows.")
-    parser.add_argument("--checkpoint", default=CHECKPOINT_DIR, help="SCENIC SFT checkpoint directory.")
-    parser.add_argument("--output", default=OUTPUT_PATH, help="Prediction JSONL output path.")
-    parser.add_argument("--summary-output", default=SUMMARY_OUTPUT_PATH, help="Summary JSON output path.")
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--max-length", type=int, default=MAX_LENGTH)
-    parser.add_argument("--dtype", default=EVAL_DTYPE, choices=("auto", "fp32", "bf16", "fp16"), help="Model dtype for evaluation.")
-    args = parser.parse_args()
-
-    device = select_device()
-    model, tokenizer, label2response = load_scenic_checkpoint(args.checkpoint, device=device)
-    eval_dtype = resolve_eval_dtype(args.dtype, device)
-    model.to(device=device, dtype=eval_dtype)
-    model.eval()
+    args = parse_args()
+    ort = require_onnxruntime()
+    onnx_path = Path(args.onnx).expanduser()
+    checkpoint_path = Path(args.checkpoint).expanduser()
+    tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_path), use_fast=True)
+    label2response = load_labels(checkpoint_path)
     label_set = set(label2response)
     rows = load_eval_rows(args.json)
+
+    session = ort.InferenceSession(
+        str(onnx_path),
+        providers=providers_for(ort, args.providers, args.trt_engine_cache_dir),
+    )
+    input_names = {item.name for item in session.get_inputs()}
+    providers = session.get_providers()
     output_path = Path(args.output).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -133,25 +197,26 @@ def main() -> None:
     }
 
     batch_count = math.ceil(len(rows) / int(args.batch_size)) if rows else 0
-    with output_path.open("w", encoding="utf-8") as handle, torch.no_grad():
-        for batch in tqdm(batched(rows, int(args.batch_size)), total=batch_count, desc="eval scenic", unit="batch"):
+    with output_path.open("w", encoding="utf-8") as handle:
+        for batch in tqdm(batched(rows, int(args.batch_size)), total=batch_count, desc="eval scenic onnx", unit="batch"):
             prompts = [item["prompt"] for item in batch]
-            tokens = tokenizer(
+            encoded = tokenizer(
                 prompts,
                 padding=True,
                 truncation=True,
                 max_length=int(args.max_length),
-                return_tensors="pt",
+                return_tensors="np",
             )
-            tokens = ensure_token_type_ids(dict(tokens))
-            tokens = {key: value.to(device) for key, value in tokens.items()}
-            logits = model(tokens)["logits"]
-            probabilities_all = torch.softmax(logits, dim=-1)
-            top_probs, top_indices = torch.topk(probabilities_all, k=min(5, logits.shape[-1]), dim=-1)
-            probabilities = top_probs.detach().cpu().tolist()
-            top_indices_list = top_indices.detach().cpu().tolist()
+            encoded = ensure_token_type_ids(dict(encoded))
+            feed = {
+                name: encoded[name].astype(np.int64, copy=False)
+                for name in ("input_ids", "attention_mask", "token_type_ids")
+                if name in input_names
+            }
+            logits = session.run(["logits"], feed)[0]
+            top_indices, probabilities = softmax_topk(logits, k=5)
 
-            for item, top_ids, top_probs in zip(batch, top_indices_list, probabilities):
+            for item, top_ids, top_probs in zip(batch, top_indices.tolist(), probabilities.tolist()):
                 predicted = label2response[int(top_ids[0])]
                 expected = item["expected_response"]
                 top5_responses = {label2response[int(label_id)] for label_id in top_ids}
@@ -197,10 +262,10 @@ def main() -> None:
     top_prediction = top_predictions[0] if top_predictions else {}
 
     summary = {
-        "checkpoint": str(args.checkpoint),
+        "onnx": str(onnx_path),
+        "checkpoint": str(checkpoint_path),
         "json": str(args.json),
-        "device": str(device),
-        "dtype": str(eval_dtype).replace("torch.", ""),
+        "providers": providers,
         "predictions_output": str(output_path),
         "rows": total,
         "scored_rows": scored,
@@ -231,10 +296,10 @@ def main() -> None:
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    print(f"checkpoint: {args.checkpoint}")
+    print(f"onnx: {onnx_path}")
+    print(f"checkpoint: {checkpoint_path}")
     print(f"json: {args.json}")
-    print(f"device: {device}")
-    print(f"dtype: {str(eval_dtype).replace('torch.', '')}")
+    print(f"providers: {providers}")
     print(f"output: {output_path}")
     print(f"summary_output: {summary_path}")
     print(f"rows: {total:,}")

@@ -446,6 +446,79 @@ For the older apples-to-apples all-linear T5-style surface, use:
 PRUNE_SCOPE=all-linear INCLUDE_CLASSIFIER=1 REINIT_CLASSIFIER=0 ./scripts/prune_scenic_sft_reference_methods_50_eval.sh
 ```
 
+### NVIDIA-only ONNX edge inference water test
+
+To test the NVIDIA 2:4 path separately through ONNX, run:
+
+```bash
+./scripts/run_scenic_onnx_nvidia_eval.sh
+```
+
+This uses the training-dataset SFT checkpoint by default, builds or reuses one
+encoder-linear NVIDIA 2:4 checkpoint with the response classifier kept dense,
+then exports and evaluates four ONNX variants:
+
+- `fp16_dense`
+- `fp16_nvidia_2_4`
+- `int8_dense`
+- `int8_nvidia_2_4`
+
+Each variant is evaluated on:
+
+- benchmark: `data/scenic/iot_instruction_benchmark_200.json`
+- training retention: `data/scenic/SCENIC_full_training_dataset.json`
+
+The combined EM1/EM5 table is written to:
+
+```text
+eval_results/scenic_sft/onnx_nvidia/onnx_nvidia_summary.json
+eval_results/scenic_sft/onnx_nvidia/onnx_nvidia_summary.csv
+```
+
+The FP16 edge-inference report is written to:
+
+```text
+eval_results/scenic_sft/onnx_nvidia/edge_fp16_report.json
+eval_results/scenic_sft/onnx_nvidia/edge_fp16_report.csv
+```
+
+That report is batch-size 1 by default and includes:
+
+- runtime path: PyTorch FP16, ONNX Runtime FP16, and TensorRT FP16 when available
+- mean latency in ms/query
+- p95 latency in ms/query
+- throughput in queries/second
+- process GPU memory when `nvidia-smi` can report it
+- PyTorch CUDA allocated/reserved memory for PyTorch rows
+- CPU RSS peak
+- source model/ONNX size, plus TensorRT engine-cache size when available
+- benchmark EM@1 and EM@5 on the 200-row benchmark
+- fixed input length, defaulting to both 64 and 128
+
+The exported ONNX files are written under:
+
+```text
+runs/scenic-onnx-nvidia/onnx/
+```
+
+Useful overrides:
+
+```bash
+PROVIDERS=cuda ./scripts/run_scenic_onnx_nvidia_eval.sh
+REBUILD_PRUNED=1 ./scripts/run_scenic_onnx_nvidia_eval.sh
+DENSE_CHECKPOINT=/path/to/checkpoint ./scripts/run_scenic_onnx_nvidia_eval.sh
+RUN_INT8=0 ./scripts/run_scenic_onnx_nvidia_eval.sh
+EDGE_INPUT_LENGTHS=128 EDGE_MEASURE_QUERIES=1000 ./scripts/run_scenic_onnx_nvidia_eval.sh
+RUN_TENSORRT=1 ./scripts/run_scenic_onnx_nvidia_eval.sh
+```
+
+The INT8 variants use ONNX Runtime dynamic weight quantization. The NVIDIA 2:4
+variants preserve the pruned zero pattern in the exported weights, but actual
+speedup still requires an inference engine/kernel that exploits 2:4 sparsity
+such as a suitable NVIDIA/TensorRT sparse path. TensorRT rows require an
+`onnxruntime-gpu` build that exposes `TensorrtExecutionProvider`; otherwise the
+runner skips them when `RUN_TENSORRT=auto`.
+
 Evaluate both checkpoints on the same local JSON file and write exact-match summaries:
 
 ```bash
