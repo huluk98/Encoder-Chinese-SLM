@@ -43,7 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--onnx", default=ONNX_MODEL, help="ONNX model path for ONNX/TensorRT runtimes.")
     parser.add_argument("--json", default=LOCAL_JSON_PATH, help="Prompt JSON used to build benchmark inputs.")
     parser.add_argument("--output", default=OUTPUT_PATH, help="Runtime summary JSON output path.")
-    parser.add_argument("--precision", default="fp16", choices=("fp16",), help="Runtime precision to benchmark.")
+    parser.add_argument(
+        "--precision",
+        default="fp16",
+        choices=("fp16", "int8"),
+        help="Runtime precision label. PyTorch benchmarking only supports fp16.",
+    )
     parser.add_argument("--max-length", type=int, default=128, help="Fixed sequence length.")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size. Use 1 for interactive IoT commands.")
     parser.add_argument("--warmup-queries", type=int, default=20)
@@ -290,7 +295,9 @@ def summarize_latencies(latencies_ms_per_query: list[float], total_queries: int,
 
 def benchmark_pytorch(args: argparse.Namespace, prompts: list[str]) -> dict[str, Any]:
     device = select_torch_device(args.device)
-    if args.precision == "fp16" and device.type != "cuda":
+    if args.precision != "fp16":
+        raise ValueError("PyTorch edge benchmarking only supports fp16.")
+    if device.type != "cuda":
         raise ValueError("PyTorch FP16 benchmarking requires a CUDA device.")
 
     model, tokenizer, _label2response = load_scenic_checkpoint(args.checkpoint, device="cpu")
@@ -395,7 +402,11 @@ def benchmark_onnx_like(args: argparse.Namespace, prompts: list[str]) -> dict[st
 
     return {
         "runtime": runtime,
-        "runtime_display": "TensorRT FP16" if runtime == "tensorrt" else "ONNX Runtime FP16",
+        "runtime_display": (
+            f"TensorRT {args.precision.upper()}"
+            if runtime == "tensorrt"
+            else f"ONNX Runtime {args.precision.upper()}"
+        ),
         "precision": args.precision,
         "checkpoint": str(Path(args.checkpoint).expanduser()),
         "onnx": str(Path(args.onnx).expanduser()),

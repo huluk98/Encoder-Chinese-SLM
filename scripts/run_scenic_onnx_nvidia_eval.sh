@@ -58,7 +58,6 @@ import sys
 required = [
     ("onnx", "onnx"),
     ("onnxruntime", "onnxruntime"),
-    ("onnxconverter_common", "onnxconverter-common"),
 ]
 missing = []
 for module_name, package_name in required:

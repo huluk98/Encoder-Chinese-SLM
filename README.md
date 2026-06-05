@@ -454,9 +454,37 @@ To test the NVIDIA 2:4 path separately through ONNX, run:
 ./scripts/run_scenic_onnx_nvidia_eval.sh
 ```
 
-This uses the training-dataset SFT checkpoint by default, builds or reuses one
-encoder-linear NVIDIA 2:4 checkpoint with the response classifier kept dense,
-then exports and evaluates four ONNX variants:
+For the simplest end-to-end encoder-only run from a base encoder checkpoint,
+use:
+
+```bash
+./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/encoder-base-checkpoint
+```
+
+This writes a generated 5-epoch SFT config, trains the encoder-only SCENIC SFT
+model, applies NVIDIA 2:4 pruning, exports only ONNX FP16 and ONNX INT8 dense
+and pruned variants, evaluates benchmark/training EM@1 and EM@5, runs ONNX
+batch-1 latency checks by default, and writes:
+
+```text
+eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.json
+eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.csv
+eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.tex
+```
+
+Useful overrides for the simple run:
+
+```bash
+TOKENIZER_PATH=/path/to/tokenizer ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+TRAIN_WITH_TORCHRUN=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+RETRAIN=0 OVERWRITE=1 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+FP16_EXPORT_DEVICE=cuda PROVIDERS=cuda ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+RUN_EDGE_BENCHMARK=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+```
+
+The existing-checkpoint ONNX helper uses the training-dataset SFT checkpoint by
+default, builds or reuses one encoder-linear NVIDIA 2:4 checkpoint with the
+response classifier kept dense, then exports and evaluates four ONNX variants:
 
 - `fp16_dense`
 - `fp16_nvidia_2_4`
