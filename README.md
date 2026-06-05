@@ -1,5 +1,7 @@
 # Encoder-Only Chinese Mini MLM
 
+H20 SFT, NVIDIA 2:4 pruning with rebuilt classifier, ONNX, and TensorRT benchmarking entrypoint: `scripts/run_h20_encoder_only_sft_prune_trt24.sh`; INT8 rows require native `trtexec` plus valid Q/DQ ONNX or calibration caches.
+
 This project mirrors the corpus and systems workflow from `/Users/luke/Documents/Decoder Only`, but trains a BERT-style encoder-only masked language model instead of a decoder-only causal LM.
 
 The full H20 recipe keeps the same public Chinese data blend and tokenizer-first preparation:

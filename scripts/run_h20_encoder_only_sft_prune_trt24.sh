@@ -26,8 +26,12 @@ OPSET="${OPSET:-17}"
 RETRAIN="${RETRAIN:-1}"
 OVERWRITE="${OVERWRITE:-1}"
 REQUIRE_TRT="${REQUIRE_TRT:-1}"
-PRUNE_SCOPE="${PRUNE_SCOPE:-all-linear}"
-PRUNE_EXCLUDE_CLASSIFIER="${PRUNE_EXCLUDE_CLASSIFIER:-0}"
+PRUNE_SCOPE="${PRUNE_SCOPE:-encoder-linear}"
+PRUNE_EXCLUDE_CLASSIFIER="${PRUNE_EXCLUDE_CLASSIFIER:-1}"
+REINIT_CLASSIFIER="${REINIT_CLASSIFIER:-1}"
+CLASSIFIER_INIT_BATCH_SIZE="${CLASSIFIER_INIT_BATCH_SIZE:-128}"
+CLASSIFIER_INIT_MAX_LENGTH="${CLASSIFIER_INIT_MAX_LENGTH:-$SEQ_LEN}"
+ALLOW_DENSE_CLASSIFIER="${ALLOW_DENSE_CLASSIFIER:-1}"
 PRUNE_DEVICE="${PRUNE_DEVICE:-cuda}"
 PRUNE_DTYPE="${PRUNE_DTYPE:-fp16}"
 
@@ -52,6 +56,11 @@ Only --base_model is required. Defaults baked into the script:
   --eval_batch_size   128
   --warmup_iters      100
   --measure_iters     1000
+
+2:4 pruning defaults:
+  PRUNE_SCOPE=encoder-linear
+  REINIT_CLASSIFIER=1
+  ALLOW_DENSE_CLASSIFIER=1
 EOF
 }
 
@@ -691,6 +700,13 @@ prune_nvidia_2_4() {
   if [[ "$PRUNE_EXCLUDE_CLASSIFIER" == "1" ]]; then
     classifier_args+=(--exclude-classifier)
   fi
+  if [[ "$REINIT_CLASSIFIER" == "1" ]]; then
+    classifier_args+=(
+      --reinitialize-classifier-from-responses
+      --classifier-init-batch-size "$CLASSIFIER_INIT_BATCH_SIZE"
+      --classifier-init-max-length "$CLASSIFIER_INIT_MAX_LENGTH"
+    )
+  fi
   CUDA_VISIBLE_DEVICES="$PRIMARY_GPU" "$PYTHON" scripts/prune_scenic_sft_reference_methods.py \
     --method nvidia \
     --checkpoint "$DENSE_CHECKPOINT" \
@@ -707,7 +723,7 @@ prune_nvidia_2_4() {
 
 verify_2_4_sparsity() {
   log "verifying NVIDIA 2:4 sparsity"
-  "$PYTHON" - "$PRUNED_CHECKPOINT" "$REPORT_DIR/sparsity_2_4_report.json" <<'PY'
+  "$PYTHON" - "$PRUNED_CHECKPOINT" "$REPORT_DIR/sparsity_2_4_report.json" "$ALLOW_DENSE_CLASSIFIER" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -722,6 +738,7 @@ from chatlm_encoder.scenic_sft import load_scenic_checkpoint
 
 checkpoint = Path(sys.argv[1]).expanduser()
 output = Path(sys.argv[2]).expanduser()
+allow_dense_classifier = sys.argv[3] == "1"
 model, _tokenizer, _labels = load_scenic_checkpoint(checkpoint, device="cpu")
 model.eval()
 
@@ -733,12 +750,19 @@ total_zero_count = 0
 total_weight_count = 0
 per_layer = []
 non_compliant_layers = []
+ignored_dense_layers = []
+
+
+def is_classifier_layer(layer_name: str) -> bool:
+    normalized = layer_name.lower()
+    return normalized == "classifier" or normalized.startswith("classifier.")
 
 for name, module in model.named_modules():
     if not isinstance(module, nn.Linear):
         continue
     weight = module.weight.detach().cpu()
     shape = list(weight.shape)
+    ignored_for_2_4_target = bool(allow_dense_classifier and is_classifier_layer(name))
     total_weight_count += int(weight.numel())
     zeros = int((weight == 0).sum().item())
     total_zero_count += zeros
@@ -749,6 +773,8 @@ for name, module in model.named_modules():
         "zero_count": zeros,
         "sparsity_pct": zeros / int(weight.numel()) * 100.0 if int(weight.numel()) else None,
         "in_features_divisible_by_4": bool(weight.shape[1] % 4 == 0),
+        "included_in_2_4_totals": not ignored_for_2_4_target,
+        "ignored_for_2_4_target": ignored_for_2_4_target,
     }
     if weight.shape[1] % 4 != 0:
         layer.update({
@@ -761,7 +787,10 @@ for name, module in model.named_modules():
             "compliant": False,
             "non_compliance_reason": "in_features is not divisible by 4",
         })
-        non_compliant_layers.append(layer["name"])
+        if ignored_for_2_4_target:
+            ignored_dense_layers.append(layer["name"])
+        else:
+            non_compliant_layers.append(layer["name"])
         per_layer.append(layer)
         continue
     grouped = weight.reshape(weight.shape[0], weight.shape[1] // 4, 4)
@@ -780,12 +809,15 @@ for name, module in model.named_modules():
         "tensorrt_eligible_block_pct": eligible_blocks / blocks * 100.0 if blocks else None,
         "compliant": compliant,
     })
-    if not compliant:
+    if ignored_for_2_4_target:
+        ignored_dense_layers.append(layer["name"])
+    elif not compliant:
         non_compliant_layers.append(layer["name"])
-    total_checked_weights += checked_weights
-    total_blocks += blocks
-    exact_2_zero_blocks += exact_blocks
-    at_least_2_zero_blocks += eligible_blocks
+    if not ignored_for_2_4_target:
+        total_checked_weights += checked_weights
+        total_blocks += blocks
+        exact_2_zero_blocks += exact_blocks
+        at_least_2_zero_blocks += eligible_blocks
     per_layer.append(layer)
 
 report = {
@@ -800,6 +832,8 @@ report = {
     "total_sparsity_pct": total_zero_count / total_weight_count * 100.0 if total_weight_count else None,
     "per_layer": per_layer,
     "non_compliant_layers": non_compliant_layers,
+    "ignored_dense_layers": ignored_dense_layers,
+    "allow_dense_classifier": allow_dense_classifier,
 }
 output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(f"[h20-trt24] wrote {output}")
@@ -1210,8 +1244,10 @@ handle_int8_optional() {
     require_path "$DENSE_INT8_QDQ_ONNX" "dense INT8 Q/DQ ONNX"
     require_path "$SPARSE_INT8_QDQ_ONNX" "sparse INT8 Q/DQ ONNX"
     log "INT8 Q/DQ ONNX inputs were provided; building INT8 engines"
-    build_trt_int8_engine "dense_sft_int8" "$DENSE_INT8_QDQ_ONNX" "$ENGINE_DIR/dense_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_dense_int8.log" ""
-    build_trt_int8_engine "nvidia_2_4_sft_int8" "$SPARSE_INT8_QDQ_ONNX" "$ENGINE_DIR/nvidia_2_4_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_nvidia_2_4_int8.log" ""
+    build_trt_int8_engine "dense_sft_int8" "$DENSE_INT8_QDQ_ONNX" "$ENGINE_DIR/dense_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_dense_int8.log" "" "disable"
+    build_trt_int8_engine "nvidia_2_4_sft_int8" "$SPARSE_INT8_QDQ_ONNX" "$ENGINE_DIR/nvidia_2_4_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_nvidia_2_4_int8.log" "" "enable"
+    benchmark_trt_engine "dense_sft_int8_trt" "$ENGINE_DIR/dense_sft_int8_seq${SEQ_LEN}.plan" "$DENSE_INT8_QDQ_ONNX" "INT8" "Dense"
+    benchmark_trt_engine "nvidia_2_4_sft_int8_trt" "$ENGINE_DIR/nvidia_2_4_sft_int8_seq${SEQ_LEN}.plan" "$SPARSE_INT8_QDQ_ONNX" "INT8" "NVIDIA 2:4"
     "$PYTHON" - "$status_path" "$DENSE_INT8_QDQ_ONNX" "$SPARSE_INT8_QDQ_ONNX" <<'PY'
 import json
 import sys
@@ -1227,8 +1263,10 @@ PY
     require_path "$DENSE_INT8_CALIBRATION_CACHE" "dense INT8 calibration cache"
     require_path "$SPARSE_INT8_CALIBRATION_CACHE" "sparse INT8 calibration cache"
     log "INT8 calibration caches were provided; building INT8 engines"
-    build_trt_int8_engine "dense_sft_int8" "$DENSE_ONNX" "$ENGINE_DIR/dense_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_dense_int8.log" "$DENSE_INT8_CALIBRATION_CACHE"
-    build_trt_int8_engine "nvidia_2_4_sft_int8" "$SPARSE_ONNX" "$ENGINE_DIR/nvidia_2_4_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_nvidia_2_4_int8.log" "$SPARSE_INT8_CALIBRATION_CACHE"
+    build_trt_int8_engine "dense_sft_int8" "$DENSE_ONNX" "$ENGINE_DIR/dense_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_dense_int8.log" "$DENSE_INT8_CALIBRATION_CACHE" "disable"
+    build_trt_int8_engine "nvidia_2_4_sft_int8" "$SPARSE_ONNX" "$ENGINE_DIR/nvidia_2_4_sft_int8_seq${SEQ_LEN}.plan" "$LOG_DIR/build_nvidia_2_4_int8.log" "$SPARSE_INT8_CALIBRATION_CACHE" "enable"
+    benchmark_trt_engine "dense_sft_int8_trt" "$ENGINE_DIR/dense_sft_int8_seq${SEQ_LEN}.plan" "$DENSE_ONNX" "INT8" "Dense"
+    benchmark_trt_engine "nvidia_2_4_sft_int8_trt" "$ENGINE_DIR/nvidia_2_4_sft_int8_seq${SEQ_LEN}.plan" "$SPARSE_ONNX" "INT8" "NVIDIA 2:4"
     "$PYTHON" - "$status_path" "$DENSE_INT8_CALIBRATION_CACHE" "$SPARSE_INT8_CALIBRATION_CACHE" <<'PY'
 import json
 import sys
@@ -1261,12 +1299,14 @@ build_trt_int8_engine() {
   local engine_path="$3"
   local log_path="$4"
   local calibration_cache="$5"
+  local sparsity_mode="${6:-disable}"
   local shapes
   shapes="$(shape_spec_for_onnx "$onnx_path")"
   local args=(
     --onnx="$onnx_path"
     --saveEngine="$engine_path"
     --int8
+    --sparsity="$sparsity_mode"
     --minShapes="$shapes"
     --optShapes="$shapes"
     --maxShapes="$shapes"
@@ -1363,6 +1403,13 @@ def memory(summary):
         if value is not None:
             return value
     return None
+
+def has_measured_runtime(summary):
+    return bool(summary) and summary.get("status") != "skipped" and (
+        summary.get("mean_latency_ms") is not None
+        or summary.get("throughput_qps") is not None
+        or summary.get("engine_model_size_mb") is not None
+    )
 
 rows = []
 
@@ -1479,6 +1526,35 @@ add_row(
     speedup=main_speedup,
 )
 
+dense_int8_trt = runtime("dense_sft_int8_trt")
+sparse_int8_trt = runtime("nvidia_2_4_sft_int8_trt")
+if has_measured_runtime(dense_int8_trt):
+    add_row(
+        model="Dense SFT",
+        runtime_label="Native TensorRT",
+        precision="INT8",
+        sparsity="Dense",
+        provider="trtexec",
+        runtime_summary=dense_int8_trt,
+        iot_metrics={},
+        train_metrics={},
+        onnx_mb=mb(dense_onnx_report),
+        sparse_selected=False,
+    )
+if has_measured_runtime(sparse_int8_trt):
+    add_row(
+        model="NVIDIA 2:4 SFT",
+        runtime_label="Native TensorRT",
+        precision="INT8",
+        sparsity="NVIDIA 2:4",
+        provider="trtexec",
+        runtime_summary=sparse_int8_trt,
+        iot_metrics={},
+        train_metrics={},
+        onnx_mb=mb(sparse_onnx_report),
+        sparse_selected=sparse_tactics.get("sparse_tactics_selected"),
+    )
+
 fieldnames = [
     "Model",
     "Architecture",
@@ -1545,7 +1621,7 @@ summary_lines = [
     f"- GPU benchmark environment: CUDA available = {env.get('torch', {}).get('cuda_is_available')}, GPU = {gpu_name}, visible GPU count = {env.get('torch', {}).get('cuda_device_count')}.",
     f"- ONNX Runtime providers: {ort_providers}. CPU ONNX fallback used for speedup claims: no. CPU-only ONNX detected: {cpu_onnx_only}.",
     f"- TensorRT sparse tactics selected: {sparse_tactics.get('sparse_tactics_selected')}; eligible evidence found: {sparse_tactics.get('sparse_tactics_eligible')}.",
-    f"- NVIDIA 2:4 sparsity: exact 2-zero block pct = {num(sparsity_report.get('exact_2_zero_block_pct'), '%')}; non-compliant layers = {sparsity_report.get('non_compliant_layers') or []}.",
+    f"- NVIDIA 2:4 target sparsity: exact 2-zero block pct = {num(sparsity_report.get('exact_2_zero_block_pct'), '%')}; non-compliant target layers = {sparsity_report.get('non_compliant_layers') or []}; intentionally dense rebuilt layers = {sparsity_report.get('ignored_dense_layers') or []}.",
     f"- Dense SFT PyTorch accuracy: {dense_acc}.",
     f"- NVIDIA 2:4 PyTorch accuracy: {sparse_acc}.",
     f"- Main speedup, computed only as dense native TensorRT FP16 latency / NVIDIA 2:4 native TensorRT FP16 latency: {num(main_speedup)}.",
