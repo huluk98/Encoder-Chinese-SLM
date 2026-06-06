@@ -464,14 +464,19 @@ use:
 ```
 
 This writes a generated 5-epoch SFT config, trains the encoder-only SCENIC SFT
-model, applies NVIDIA 2:4 pruning, exports only ONNX FP16 and ONNX INT8 dense
-and pruned variants, evaluates benchmark/training EM@1 and EM@5 on CUDA, runs
-ONNX batch-1 latency checks by default, and writes:
+model, applies NVIDIA 2:4 pruning, exports ONNX FP16 and ONNX INT8 dense
+and pruned variants, exports a dense ONNX FP32 baseline for precision
+benchmarking, evaluates benchmark/training EM@1 and EM@5 on CUDA, runs ONNX
+batch-1 latency checks by default, runs the paper-facing FP32/FP16/INT8 ONNX
+precision benchmark, and writes:
 
 ```text
 eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.json
 eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.csv
 eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/encoder_only_fp16_int8_table.tex
+eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/onnx_precision_benchmark/onnx_precision_benchmark.md
+eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/onnx_precision_benchmark/onnx_precision_benchmark.csv
+eval_results/scenic_sft/encoder_only_nvidia_fp16_int8/onnx_precision_benchmark/onnx_precision_benchmark.tex
 ```
 
 Useful overrides for the simple run:
@@ -482,7 +487,10 @@ TRAIN_WITH_TORCHRUN=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/
 RETRAIN=0 OVERWRITE=1 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 GPU_IDS=0,1,2,3,4,5,6,7 PROVIDERS=cuda EDGE_PROVIDERS=cuda ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 RUN_EDGE_BENCHMARK=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+RUN_ONNX_PRECISION_BENCHMARK=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 PROVIDERS=auto EDGE_PROVIDERS=auto FP16_EXPORT_DEVICE=auto PARALLEL_GPU_EVAL=0 PARALLEL_GPU_BENCHMARK=0 ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+PRECISION_BENCHMARK_DEVICE_NAME="Jetson Orin Nano" ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
+PRECISION_BENCHMARK_POWER_LOG=/path/to/power.csv ./scripts/run_encoder_only_base_nvidia_fp16_int8.sh /path/to/base
 ```
 
 The real evaluation defaults require `onnxruntime-gpu`, exports FP16 on CUDA,

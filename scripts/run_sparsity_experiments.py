@@ -31,6 +31,7 @@ from chatlm_encoder.linear_sparsity import (  # noqa: E402
 from chatlm_encoder.scenic_sft import (  # noqa: E402
     ScenicEncoderForResponseSelection,
     ensure_token_type_ids,
+    initialize_classifier_from_responses,
     load_scenic_checkpoint,
     save_scenic_checkpoint,
 )
@@ -203,6 +204,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recovery_train_path", default=None)
     parser.add_argument("--validation_path", default=None)
     parser.add_argument("--bootstrap_resamples", type=int, default=1000)
+    parser.add_argument(
+        "--reinitialize_classifier_from_responses",
+        action="store_true",
+        help=(
+            "For encoder-only SCENIC runs, rebuild the dense response classifier "
+            "from response embeddings after one-shot/progressive pruning, matching "
+            "the reference one-shot pruning control."
+        ),
+    )
+    parser.add_argument("--classifier_init_batch_size", type=int, default=128)
+    parser.add_argument("--classifier_init_max_length", type=int, default=128)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="auto", choices=("auto", "fp32", "bf16", "fp16"))
     return parser.parse_args()
@@ -691,6 +703,33 @@ def validation_scores(
     return metrics["overall"]["em1"], metrics["overall"]["em5"]
 
 
+def maybe_reinitialize_encoder_classifier(
+    bundle: ModelBundle,
+    args: argparse.Namespace,
+    device: torch.device,
+) -> bool:
+    if not bool(args.reinitialize_classifier_from_responses):
+        return False
+    if bundle.model_family != "encoder_only":
+        raise ValueError("--reinitialize_classifier_from_responses is only supported for encoder_only.")
+    if bool(args.prune_output_heads):
+        raise ValueError(
+            "--reinitialize_classifier_from_responses cannot be combined with --prune_output_heads, "
+            "because it would overwrite a pruned output/classifier head."
+        )
+    assert bundle.label2response is not None
+    initialize_classifier_from_responses(
+        model=bundle.model,  # type: ignore[arg-type]
+        tokenizer=bundle.tokenizer,
+        label2response=bundle.label2response,
+        device=device,
+        max_length=int(args.classifier_init_max_length),
+        batch_size=int(args.classifier_init_batch_size),
+    )
+    bundle.model.eval()
+    return True
+
+
 def augment_prediction_rows(
     records: list[dict[str, Any]],
     args: argparse.Namespace,
@@ -855,6 +894,17 @@ def run_condition(
         "progressive_schedule": args.progressive_schedule,
         "recovery_epochs_per_stage": int(args.recovery_epochs_per_stage),
         "final_recovery_epochs": int(args.final_recovery_epochs),
+        "classifier_reinitialized_after_pruning": bool(args.reinitialize_classifier_from_responses),
+        "classifier_init_batch_size": (
+            int(args.classifier_init_batch_size)
+            if bool(args.reinitialize_classifier_from_responses)
+            else None
+        ),
+        "classifier_init_max_length": (
+            int(args.classifier_init_max_length)
+            if bool(args.reinitialize_classifier_from_responses)
+            else None
+        ),
     }
 
     label = sparsity_label(target_sparsity)
@@ -871,6 +921,8 @@ def run_condition(
             sparsity=target_sparsity,
             config=sparsity_config,
         )
+        maybe_reinitialize_encoder_classifier(bundle, args, device)
+        stats = current_linear_sparsity_summary(bundle.model, sparsity_config, target_sparsity)
         mask_file = output_dir / "masks" / f"masks_{model_family}_{pruning_mode}_{label}_{args.seed}.pt"
         save_masks(mask_file, masks, {**pruning_config, **stats})
         mask_path = str(mask_file)
@@ -967,6 +1019,7 @@ def run_condition(
         finally:
             remove_hooks(hooks)
 
+        maybe_reinitialize_encoder_classifier(bundle, args, device)
         stats = current_linear_sparsity_summary(bundle.model, sparsity_config, target_sparsity)
         mask_file = output_dir / "masks" / f"masks_{model_family}_{pruning_mode}_{label}_{args.seed}.pt"
         save_masks(mask_file, masks, {**pruning_config, **stats})

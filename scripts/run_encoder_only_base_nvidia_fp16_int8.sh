@@ -35,6 +35,18 @@ EDGE_BATCH_SIZE="${EDGE_BATCH_SIZE:-1}"
 EDGE_WARMUP_QUERIES="${EDGE_WARMUP_QUERIES:-20}"
 EDGE_MEASURE_QUERIES="${EDGE_MEASURE_QUERIES:-200}"
 EDGE_PROVIDERS="${EDGE_PROVIDERS:-$PROVIDERS}"
+RUN_ONNX_PRECISION_BENCHMARK="${RUN_ONNX_PRECISION_BENCHMARK:-1}"
+PRECISION_BENCHMARK_ROOT="${PRECISION_BENCHMARK_ROOT:-$EVAL_ROOT/onnx_precision_benchmark}"
+PRECISION_BENCHMARK_PROVIDERS="${PRECISION_BENCHMARK_PROVIDERS:-CPUExecutionProvider CUDAExecutionProvider QNNExecutionProvider NNAPIExecutionProvider CoreMLExecutionProvider OpenVINOExecutionProvider}"
+PRECISION_BENCHMARK_WARMUP="${PRECISION_BENCHMARK_WARMUP:-30}"
+PRECISION_BENCHMARK_RUNS="${PRECISION_BENCHMARK_RUNS:-200}"
+PRECISION_BENCHMARK_CALIBRATION_SAMPLES="${PRECISION_BENCHMARK_CALIBRATION_SAMPLES:-128}"
+PRECISION_BENCHMARK_DEVICE_NAME="${PRECISION_BENCHMARK_DEVICE_NAME:-}"
+PRECISION_BENCHMARK_POWER_LOG="${PRECISION_BENCHMARK_POWER_LOG:-}"
+PRECISION_BENCHMARK_POWER_COLUMN="${PRECISION_BENCHMARK_POWER_COLUMN:-power_w}"
+PRECISION_BENCHMARK_TIMESTAMP_COLUMN="${PRECISION_BENCHMARK_TIMESTAMP_COLUMN:-timestamp_s}"
+PRECISION_BENCHMARK_PROFILE_ORT="${PRECISION_BENCHMARK_PROFILE_ORT:-0}"
+PRECISION_BENCHMARK_DISABLE_IOBINDING="${PRECISION_BENCHMARK_DISABLE_IOBINDING:-0}"
 PARALLEL_GPU_EVAL="${PARALLEL_GPU_EVAL:-1}"
 PARALLEL_GPU_BENCHMARK="${PARALLEL_GPU_BENCHMARK:-1}"
 
@@ -52,7 +64,7 @@ REINIT_CLASSIFIER="${REINIT_CLASSIFIER:-1}"
 CLASSIFIER_INIT_BATCH_SIZE="${CLASSIFIER_INIT_BATCH_SIZE:-128}"
 CLASSIFIER_INIT_MAX_LENGTH="${CLASSIFIER_INIT_MAX_LENGTH:-128}"
 
-mkdir -p "$RUN_ROOT" "$ONNX_ROOT" "$EVAL_ROOT" "$EDGE_ROOT"
+mkdir -p "$RUN_ROOT" "$ONNX_ROOT" "$EVAL_ROOT" "$EDGE_ROOT" "$PRECISION_BENCHMARK_ROOT"
 
 GPU_ID_LIST=()
 
@@ -113,6 +125,7 @@ import sys
 
 providers, edge_providers, fp16_export_device, gpu_ids = sys.argv[1:]
 required = [("onnx", "onnx"), ("onnxruntime", "onnxruntime")]
+optional = [("onnxconverter_common", "onnxconverter-common"), ("psutil", "psutil")]
 missing = []
 for module_name, package_name in required:
     try:
@@ -124,6 +137,23 @@ if missing:
     print("[encoder-only-fp16-int8] missing: " + ", ".join(missing), file=sys.stderr)
     print("[encoder-only-fp16-int8] install with: pip install " + " ".join(missing), file=sys.stderr)
     sys.exit(1)
+
+optional_missing = []
+for module_name, package_name in optional:
+    try:
+        importlib.import_module(module_name)
+    except ImportError:
+        optional_missing.append(package_name)
+if optional_missing:
+    print(
+        "[encoder-only-fp16-int8] optional precision-benchmark packages missing: "
+        + ", ".join(optional_missing),
+        file=sys.stderr,
+    )
+    print(
+        "[encoder-only-fp16-int8] install with: pip install " + " ".join(optional_missing),
+        file=sys.stderr,
+    )
 
 import onnxruntime as ort
 import torch
@@ -333,6 +363,53 @@ benchmark_variant_on_gpu() {
     export CUDA_VISIBLE_DEVICES="$gpu_id"
     benchmark_variant "$@"
   )
+}
+
+run_precision_benchmark() {
+  if [[ "$RUN_ONNX_PRECISION_BENCHMARK" != "1" ]]; then
+    return
+  fi
+
+  local fp32_onnx="$ONNX_ROOT/fp32_dense/model.onnx"
+  local fp16_onnx="$ONNX_ROOT/fp16_dense/model.onnx"
+  local int8_onnx="$ONNX_ROOT/int8_dense/model.onnx"
+  local extra_args=()
+
+  if [[ -n "$PRECISION_BENCHMARK_DEVICE_NAME" ]]; then
+    extra_args+=(--device-name "$PRECISION_BENCHMARK_DEVICE_NAME")
+  fi
+  if [[ -n "$PRECISION_BENCHMARK_POWER_LOG" ]]; then
+    extra_args+=(
+      --power-log "$PRECISION_BENCHMARK_POWER_LOG"
+      --power-column "$PRECISION_BENCHMARK_POWER_COLUMN"
+      --timestamp-column "$PRECISION_BENCHMARK_TIMESTAMP_COLUMN"
+    )
+  fi
+  if [[ "$PRECISION_BENCHMARK_PROFILE_ORT" == "1" ]]; then
+    extra_args+=(--profile-ort)
+  fi
+  if [[ "$PRECISION_BENCHMARK_DISABLE_IOBINDING" == "1" ]]; then
+    extra_args+=(--disable-iobinding)
+  fi
+
+  read -r -a precision_providers <<< "$PRECISION_BENCHMARK_PROVIDERS"
+
+  echo "[encoder-only-fp16-int8] ONNX precision benchmark -> $PRECISION_BENCHMARK_ROOT"
+  python tools/benchmark_onnx_precision.py \
+    --fp32-onnx "$fp32_onnx" \
+    --fp16-onnx "$fp16_onnx" \
+    --int8-onnx "$int8_onnx" \
+    --output-dir "$PRECISION_BENCHMARK_ROOT" \
+    --providers "${precision_providers[@]}" \
+    --batch-size "$EDGE_BATCH_SIZE" \
+    --warmup "$PRECISION_BENCHMARK_WARMUP" \
+    --runs "$PRECISION_BENCHMARK_RUNS" \
+    --calibration-samples "$PRECISION_BENCHMARK_CALIBRATION_SAMPLES" \
+    --table-formats csv markdown latex \
+    --checkpoint "$DENSE_CHECKPOINT" \
+    --json "$BENCHMARK_JSON" \
+    --max-length "$EDGE_INPUT_LENGTH" \
+    "${extra_args[@]}"
 }
 
 run_accuracy_evals() {
@@ -545,6 +622,8 @@ train_sft
 require_path "$DENSE_CHECKPOINT" "5 epoch SFT checkpoint"
 prune_nvidia
 
+export_variant "fp32_dense" "fp32" "$DENSE_CHECKPOINT" "$ONNX_ROOT/fp32_dense/model.onnx"
+
 variant_specs=(
   "fp16_dense|fp16|$DENSE_CHECKPOINT|$ONNX_ROOT/fp16_dense/model.onnx"
   "fp16_nvidia_2_4|fp16|$PRUNED_CHECKPOINT|$ONNX_ROOT/fp16_nvidia_2_4/model.onnx"
@@ -563,9 +642,11 @@ if [[ "$RUN_EDGE_BENCHMARK" == "1" ]]; then
   run_edge_benchmarks
 fi
 
+run_precision_benchmark
 aggregate_table
 
 echo "[encoder-only-fp16-int8] done"
 echo "  $EVAL_ROOT/encoder_only_fp16_int8_table.json"
 echo "  $EVAL_ROOT/encoder_only_fp16_int8_table.csv"
 echo "  $EVAL_ROOT/encoder_only_fp16_int8_table.tex"
+echo "  $PRECISION_BENCHMARK_ROOT/onnx_precision_benchmark.md"
