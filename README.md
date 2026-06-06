@@ -18,6 +18,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the exact architecture classification
 See [PRETRAINING_AUDIT.md](PRETRAINING_AUDIT.md) for the BERT/RoBERTa tokenization and MLM training audit.
 See [BENCHMARKS.md](BENCHMARKS.md) for C-Eval output notes after training.
 
+## License
+
+This repository's code and documentation are released under the [MIT License](LICENSE). External datasets and model resources referenced by this project remain governed by their respective source licenses and terms.
+
 ## Setup
 
 ```bash
