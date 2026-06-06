@@ -34,6 +34,8 @@ CLASSIFIER_INIT_MAX_LENGTH="${CLASSIFIER_INIT_MAX_LENGTH:-$SEQ_LEN}"
 ALLOW_DENSE_CLASSIFIER="${ALLOW_DENSE_CLASSIFIER:-1}"
 PRUNE_DEVICE="${PRUNE_DEVICE:-cuda}"
 PRUNE_DTYPE="${PRUNE_DTYPE:-fp16}"
+RUN_ONNX_DYNAMIC_INT8="${RUN_ONNX_DYNAMIC_INT8:-1}"
+ONNX_DYNAMIC_INT8_PROVIDERS="${ONNX_DYNAMIC_INT8_PROVIDERS:-cpu}"
 
 DENSE_INT8_QDQ_ONNX="${DENSE_INT8_QDQ_ONNX:-}"
 SPARSE_INT8_QDQ_ONNX="${SPARSE_INT8_QDQ_ONNX:-}"
@@ -61,6 +63,10 @@ Only --base_model is required. Defaults baked into the script:
   PRUNE_SCOPE=encoder-linear
   REINIT_CLASSIFIER=1
   ALLOW_DENSE_CLASSIFIER=1
+
+ONNX-only comparison:
+  RUN_ONNX_DYNAMIC_INT8=1
+  ONNX_DYNAMIC_INT8_PROVIDERS=cpu
 EOF
 }
 
@@ -199,6 +205,8 @@ TRAIN_JSON="$WORK_DIR/data/train.json"
 IOT200_JSON="$WORK_DIR/data/iot200.json"
 DENSE_ONNX="$ONNX_DIR/dense_sft_fp16/model.onnx"
 SPARSE_ONNX="$ONNX_DIR/nvidia_2_4_sft_fp16/model.onnx"
+DENSE_ONNX_INT8="$ONNX_DIR/dense_sft_int8_dynamic/model.onnx"
+SPARSE_ONNX_INT8="$ONNX_DIR/nvidia_2_4_sft_int8_dynamic/model.onnx"
 DENSE_ENGINE="$ENGINE_DIR/dense_sft_fp16_seq${SEQ_LEN}.plan"
 SPARSE_ENGINE="$ENGINE_DIR/nvidia_2_4_sft_fp16_seq${SEQ_LEN}.plan"
 
@@ -857,6 +865,20 @@ export_onnx_fp16() {
     --overwrite
 }
 
+export_onnx_dynamic_int8() {
+  local checkpoint="$1"
+  local output_path="$2"
+  log "exporting dynamic INT8 ONNX: $output_path"
+  mkdir -p "$(dirname "$output_path")"
+  "$PYTHON" scripts/export_scenic_sft_onnx.py \
+    --checkpoint "$checkpoint" \
+    --output "$output_path" \
+    --precision int8 \
+    --max-length "$SEQ_LEN" \
+    --opset "$OPSET" \
+    --overwrite
+}
+
 inspect_onnx() {
   local onnx_path="$1"
   local output_path="$2"
@@ -1186,6 +1208,81 @@ benchmark_onnx_cuda_if_available() {
   fi
 }
 
+eval_onnx_runtime_variant() {
+  local variant="$1"
+  local checkpoint="$2"
+  local onnx_path="$3"
+  local dataset_name="$4"
+  local dataset_path="$5"
+  local providers="$6"
+  local output_dir="$EVAL_DIR/$variant"
+  mkdir -p "$output_dir"
+  log "evaluating ONNX Runtime $variant on $dataset_name with providers=$providers"
+  "$PYTHON" scripts/eval_scenic_sft_onnx_local.py \
+    --json "$dataset_path" \
+    --checkpoint "$checkpoint" \
+    --onnx "$onnx_path" \
+    --output "$output_dir/${dataset_name}_predictions.jsonl" \
+    --summary-output "$output_dir/${dataset_name}_metrics.json" \
+    --batch-size "$EVAL_BATCH_SIZE" \
+    --max-length "$SEQ_LEN" \
+    --providers "$providers"
+}
+
+benchmark_onnx_runtime_variant() {
+  local variant="$1"
+  local checkpoint="$2"
+  local onnx_path="$3"
+  local precision="$4"
+  local providers="$5"
+  log "benchmarking ONNX Runtime $variant with providers=$providers"
+  "$PYTHON" scripts/benchmark_scenic_sft_edge_runtime.py \
+    --runtime onnx \
+    --runtime-label "$variant" \
+    --checkpoint "$checkpoint" \
+    --onnx "$onnx_path" \
+    --json "$IOT200_JSON" \
+    --output "$RUNTIME_DIR/${variant}.json" \
+    --precision "$precision" \
+    --max-length "$SEQ_LEN" \
+    --batch-size 1 \
+    --warmup-queries "$WARMUP_ITERS" \
+    --measure-queries "$MEASURE_ITERS" \
+    --providers "$providers"
+}
+
+run_onnx_dynamic_int8_comparison() {
+  if [[ "$RUN_ONNX_DYNAMIC_INT8" != "1" ]]; then
+    write_skip_report "$REPORT_DIR/onnx_dynamic_int8_status.json" "RUN_ONNX_DYNAMIC_INT8 is not enabled."
+    return
+  fi
+  log "running ONNX-only dynamic INT8 comparison"
+  export_onnx_dynamic_int8 "$DENSE_CHECKPOINT" "$DENSE_ONNX_INT8"
+  export_onnx_dynamic_int8 "$PRUNED_CHECKPOINT" "$SPARSE_ONNX_INT8"
+  inspect_onnx "$DENSE_ONNX_INT8" "$REPORT_DIR/onnx_inspection_dense_sft_int8_dynamic.json"
+  inspect_onnx "$SPARSE_ONNX_INT8" "$REPORT_DIR/onnx_inspection_nvidia_2_4_sft_int8_dynamic.json"
+  eval_onnx_runtime_variant "dense_sft_int8_onnx" "$DENSE_CHECKPOINT" "$DENSE_ONNX_INT8" "iot200" "$IOT200_JSON" "$ONNX_DYNAMIC_INT8_PROVIDERS"
+  eval_onnx_runtime_variant "dense_sft_int8_onnx" "$DENSE_CHECKPOINT" "$DENSE_ONNX_INT8" "train" "$TRAIN_JSON" "$ONNX_DYNAMIC_INT8_PROVIDERS"
+  eval_onnx_runtime_variant "nvidia_2_4_sft_int8_onnx" "$PRUNED_CHECKPOINT" "$SPARSE_ONNX_INT8" "iot200" "$IOT200_JSON" "$ONNX_DYNAMIC_INT8_PROVIDERS"
+  eval_onnx_runtime_variant "nvidia_2_4_sft_int8_onnx" "$PRUNED_CHECKPOINT" "$SPARSE_ONNX_INT8" "train" "$TRAIN_JSON" "$ONNX_DYNAMIC_INT8_PROVIDERS"
+  benchmark_onnx_runtime_variant "dense_sft_int8_onnx" "$DENSE_CHECKPOINT" "$DENSE_ONNX_INT8" "int8" "$ONNX_DYNAMIC_INT8_PROVIDERS"
+  benchmark_onnx_runtime_variant "nvidia_2_4_sft_int8_onnx" "$PRUNED_CHECKPOINT" "$SPARSE_ONNX_INT8" "int8" "$ONNX_DYNAMIC_INT8_PROVIDERS"
+  "$PYTHON" - "$REPORT_DIR/onnx_dynamic_int8_status.json" "$ONNX_DYNAMIC_INT8_PROVIDERS" "$DENSE_ONNX_INT8" "$SPARSE_ONNX_INT8" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "status": "completed",
+    "type": "onnxruntime_dynamic_weight_int8",
+    "providers": sys.argv[2],
+    "dense_onnx": sys.argv[3],
+    "sparse_onnx": sys.argv[4],
+    "note": "ONNX dynamic INT8 is an ONNX Runtime comparison row, not a TensorRT INT8 engine benchmark.",
+}, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 benchmark_ort_tensorrt_if_available() {
   if ort_provider_available "TensorrtExecutionProvider"; then
     log "benchmarking ONNX Runtime TensorRT EP: dense_sft_fp16"
@@ -1366,6 +1463,9 @@ int8_status = load_json(int8_status_path)
 sparsity_report = load_json(sparsity_report_path)
 dense_onnx_report = load_json(dense_onnx_report_path)
 sparse_onnx_report = load_json(sparse_onnx_report_path)
+dense_int8_onnx_report = load_json(output_dir / "reports" / "onnx_inspection_dense_sft_int8_dynamic.json")
+sparse_int8_onnx_report = load_json(output_dir / "reports" / "onnx_inspection_nvidia_2_4_sft_int8_dynamic.json")
+onnx_dynamic_int8_status = load_json(output_dir / "reports" / "onnx_dynamic_int8_status.json")
 
 gpu_name = None
 devices = env.get("torch", {}).get("cuda_devices") or []
@@ -1378,6 +1478,10 @@ dense_iot = metric("dense_sft_fp16", "iot200")
 dense_train = metric("dense_sft_fp16", "train")
 sparse_iot = metric("nvidia_2_4_sft_fp16", "iot200")
 sparse_train = metric("nvidia_2_4_sft_fp16", "train")
+dense_int8_onnx_iot = metric("dense_sft_int8_onnx", "iot200")
+dense_int8_onnx_train = metric("dense_sft_int8_onnx", "train")
+sparse_int8_onnx_iot = metric("nvidia_2_4_sft_int8_onnx", "iot200")
+sparse_int8_onnx_train = metric("nvidia_2_4_sft_int8_onnx", "train")
 dense_trt_iot = load_json(output_dir / "eval" / "dense_sft_fp16_trt" / "iot200_metrics.json")
 sparse_trt_iot = load_json(output_dir / "eval" / "nvidia_2_4_sft_fp16_trt" / "iot200_metrics.json")
 
@@ -1410,6 +1514,12 @@ def has_measured_runtime(summary):
         or summary.get("throughput_qps") is not None
         or summary.get("engine_model_size_mb") is not None
     )
+
+def provider_text(summary, fallback):
+    providers = summary.get("providers") if isinstance(summary, dict) else None
+    if isinstance(providers, list):
+        return "|".join(str(item) for item in providers)
+    return providers or fallback
 
 rows = []
 
@@ -1476,6 +1586,19 @@ add_row(
     train_metrics=dense_train,
     onnx_mb=mb(dense_onnx_report),
 )
+dense_int8_onnx_runtime = runtime("dense_sft_int8_onnx")
+if has_measured_runtime(dense_int8_onnx_runtime):
+    add_row(
+        model="Dense SFT",
+        runtime_label="ONNX Runtime",
+        precision="INT8 dynamic",
+        sparsity="Dense",
+        provider=provider_text(dense_int8_onnx_runtime, "ONNX Runtime"),
+        runtime_summary=dense_int8_onnx_runtime,
+        iot_metrics=dense_int8_onnx_iot,
+        train_metrics=dense_int8_onnx_train,
+        onnx_mb=mb(dense_int8_onnx_report),
+    )
 add_row(
     model="Dense SFT",
     runtime_label="ONNX Runtime TensorRT EP",
@@ -1512,6 +1635,19 @@ add_row(
     onnx_mb=mb(sparse_onnx_report),
     sparse_selected=None,
 )
+sparse_int8_onnx_runtime = runtime("nvidia_2_4_sft_int8_onnx")
+if has_measured_runtime(sparse_int8_onnx_runtime):
+    add_row(
+        model="NVIDIA 2:4 SFT",
+        runtime_label="ONNX Runtime",
+        precision="INT8 dynamic",
+        sparsity="NVIDIA 2:4",
+        provider=provider_text(sparse_int8_onnx_runtime, "ONNX Runtime"),
+        runtime_summary=sparse_int8_onnx_runtime,
+        iot_metrics=sparse_int8_onnx_iot,
+        train_metrics=sparse_int8_onnx_train,
+        onnx_mb=mb(sparse_int8_onnx_report),
+    )
 add_row(
     model="NVIDIA 2:4 SFT",
     runtime_label="Native TensorRT",
@@ -1591,6 +1727,7 @@ payload = {
     "throughput_gain_nvidia_2_4_trt_fp16_over_dense_trt_fp16": throughput_gain,
     "cpu_onnx_only": cpu_onnx_only,
     "onnxruntime_providers": ort_providers,
+    "onnx_dynamic_int8_status": onnx_dynamic_int8_status,
     "sparse_tactics": sparse_tactics,
     "sparsity_report": {
         "exact_2_zero_block_pct": sparsity_report.get("exact_2_zero_block_pct"),
@@ -1627,11 +1764,13 @@ summary_lines = [
     f"- Main speedup, computed only as dense native TensorRT FP16 latency / NVIDIA 2:4 native TensorRT FP16 latency: {num(main_speedup)}.",
     f"- Throughput gain, computed only as NVIDIA 2:4 native TensorRT QPS / dense native TensorRT QPS: {num(throughput_gain)}.",
     f"- Real sparse hardware speedup observed: {bool(main_speedup and main_speedup > 1.0 and sparse_tactics.get('sparse_tactics_selected'))}.",
+    f"- ONNX dynamic INT8 status: {onnx_dynamic_int8_status.get('status')}; {onnx_dynamic_int8_status.get('note') or onnx_dynamic_int8_status.get('reason') or ''}",
     f"- INT8 status: {int8_status.get('status')}; {int8_status.get('reason') or ''}",
     "",
     "Limitations:",
     "- Native TensorRT .plan accuracy evaluation is not implemented in the repo. When ONNX Runtime TensorrtExecutionProvider is available, IoT200 TensorRT EP EM is reported as a TensorRT consistency proxy.",
     "- trtexec latency uses generated input tensors at batch size 1 and sequence length 64; PyTorch and ONNX Runtime latency use the repo benchmark script on pre-tokenized IoT prompts.",
+    "- ONNX dynamic INT8 rows are ONNX Runtime comparison rows only; they are excluded from native TensorRT speedup claims.",
     "- CPU ONNX is saved only as portability evidence if it appears; it is excluded from speedup claims.",
     "",
     f"Machine-readable metrics: `{json_path}` and `{csv_path}`.",
@@ -1662,6 +1801,7 @@ export_onnx_fp16 "$DENSE_CHECKPOINT" "$DENSE_ONNX"
 export_onnx_fp16 "$PRUNED_CHECKPOINT" "$SPARSE_ONNX"
 inspect_onnx "$DENSE_ONNX" "$REPORT_DIR/onnx_inspection_dense_sft_fp16.json"
 inspect_onnx "$SPARSE_ONNX" "$REPORT_DIR/onnx_inspection_nvidia_2_4_sft_fp16.json"
+run_onnx_dynamic_int8_comparison
 
 require_trtexec
 if command -v trtexec >/dev/null 2>&1; then
