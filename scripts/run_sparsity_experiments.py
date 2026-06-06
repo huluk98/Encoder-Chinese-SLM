@@ -23,6 +23,8 @@ from chatlm_encoder.linear_sparsity import (  # noqa: E402
     LinearSparsityConfig,
     apply_magnitude_pruning,
     apply_masks,
+    apply_score_pruning,
+    collect_prunable_linear_modules,
     current_linear_sparsity_summary,
     register_mask_gradient_hooks,
     remove_hooks,
@@ -165,25 +167,27 @@ PROGRESSIVE_FIELDNAMES = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run controlled SCENIC linear-weight sparsity experiments at 0%, 30%, and 50%."
+        description="Run controlled SCENIC linear-weight sparsity experiments at 30% and 50%."
     )
     parser.add_argument("--experiment_name", required=True)
     parser.add_argument("--model_family", required=True)
     parser.add_argument("--model_checkpoint", required=True)
-    parser.add_argument("--sparsity_levels", type=float, nargs="+", default=[0.0, 0.3, 0.5])
+    parser.add_argument("--sparsity_levels", type=float, nargs="+", default=[0.3, 0.5])
     parser.add_argument(
         "--pruning_modes",
         "--pruning_mode",
         dest="pruning_modes",
         nargs="+",
-        default=["dense", "oneshot", "progressive"],
+        default=["dense", "progressive"],
         choices=("dense", "oneshot", "progressive"),
     )
     parser.add_argument("--prune_scope", default="linear_weights", choices=("linear_weights",))
-    parser.add_argument("--prune_method", default="magnitude", choices=("magnitude",))
+    parser.add_argument("--prune_method", default="magnitude", choices=("magnitude", "gradient"))
     parser.add_argument("--progressive_schedule", default="staged", choices=("staged",))
-    parser.add_argument("--recovery_epochs_per_stage", type=int, default=0)
+    parser.add_argument("--recovery_epochs_per_stage", type=int, default=1)
     parser.add_argument("--final_recovery_epochs", type=int, default=1)
+    parser.add_argument("--gradient_calibration_batches", type=int, default=64)
+    parser.add_argument("--gradient_calibration_batch_size", type=int, default=None)
     parser.add_argument("--prune_output_heads", action="store_true")
     parser.add_argument("--global_pruning", action="store_true")
     parser.add_argument("--regrowth", action="store_true")
@@ -505,6 +509,110 @@ def training_defaults(args: argparse.Namespace, bundle: ModelBundle) -> dict[str
         "max_grad_norm": float(args.max_grad_norm or train_config.get("max_grad_norm", 1.0)),
         "optimizer": "AdamW",
     }
+
+
+def collect_encoder_gradient_saliency(
+    bundle: ModelBundle,
+    rows: list[dict[str, str]],
+    args: argparse.Namespace,
+    device: torch.device,
+    dtype: torch.dtype,
+    sparsity_config: LinearSparsityConfig,
+    seed: int,
+) -> dict[str, torch.Tensor]:
+    if bundle.model_family != "encoder_only":
+        raise ValueError("Gradient pruning currently supports encoder_only SCENIC checkpoints.")
+    assert bundle.label2response is not None
+    response_to_label = {response: index for index, response in enumerate(bundle.label2response)}
+    examples = []
+    for row in rows:
+        if row["target"] not in response_to_label:
+            raise ValueError(f"Gradient calibration target not in checkpoint label space: {row['target']!r}")
+        examples.append((row["input"], response_to_label[row["target"]]))
+
+    random.Random(seed).shuffle(examples)
+    modules = collect_prunable_linear_modules(
+        bundle.model,
+        prune_output_heads=bool(sparsity_config.prune_output_heads),
+    )
+    saliency = {
+        name: torch.zeros_like(module.weight.detach(), dtype=torch.float32, device=device)
+        for name, module in modules
+    }
+    if not saliency:
+        raise RuntimeError("No prunable nn.Linear modules matched the configured pruning scope.")
+
+    batch_size = int(args.gradient_calibration_batch_size or args.batch_size or 4)
+    max_batches = int(args.gradient_calibration_batches)
+    bundle.model.train()
+    bundle.model.zero_grad(set_to_none=True)
+    for batch_index, batch in enumerate(batched(examples, batch_size), start=1):
+        if max_batches > 0 and batch_index > max_batches:
+            break
+        prompts = [item[0] for item in batch]
+        labels = torch.tensor([item[1] for item in batch], dtype=torch.long, device=device)
+        tokens = bundle.tokenizer(
+            prompts,
+            padding=True,
+            truncation=True,
+            max_length=int(args.max_length),
+            return_tensors="pt",
+        )
+        tokens = ensure_token_type_ids(dict(tokens))
+        bundle.model.zero_grad(set_to_none=True)
+        with autocast_for(device, dtype):
+            output = bundle.model(move_batch(tokens, device), labels=labels)
+            loss = output["loss"]
+        loss.backward()
+        for name, module in modules:
+            if module.weight.grad is None:
+                continue
+            saliency[name].add_((module.weight.detach().float() * module.weight.grad.detach().float()).abs())
+
+    bundle.model.zero_grad(set_to_none=True)
+    bundle.model.eval()
+    return {name: value.detach().cpu() for name, value in saliency.items()}
+
+
+def apply_pruning_method(
+    bundle: ModelBundle,
+    args: argparse.Namespace,
+    sparsity_config: LinearSparsityConfig,
+    target_sparsity: float,
+    masks: dict[str, torch.Tensor] | None,
+    train_rows: list[dict[str, str]] | None,
+    device: torch.device,
+    dtype: torch.dtype,
+    seed: int,
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    if args.prune_method == "magnitude":
+        return apply_magnitude_pruning(
+            bundle.model,
+            sparsity=target_sparsity,
+            config=sparsity_config,
+            masks=masks,
+        )
+    if args.prune_method == "gradient":
+        if train_rows is None:
+            raise ValueError("Gradient pruning needs --recovery_train_path or an inferable checkpoint train_json.")
+        saliency = collect_encoder_gradient_saliency(
+            bundle=bundle,
+            rows=train_rows,
+            args=args,
+            device=device,
+            dtype=dtype,
+            sparsity_config=sparsity_config,
+            seed=seed,
+        )
+        return apply_score_pruning(
+            bundle.model,
+            score_tensors=saliency,
+            sparsity=target_sparsity,
+            config=sparsity_config,
+            masks=masks,
+            method="gradient",
+        )
+    raise ValueError(f"Unsupported prune_method: {args.prune_method}")
 
 
 def train_encoder_epoch(
@@ -894,6 +1002,14 @@ def run_condition(
         "progressive_schedule": args.progressive_schedule,
         "recovery_epochs_per_stage": int(args.recovery_epochs_per_stage),
         "final_recovery_epochs": int(args.final_recovery_epochs),
+        "gradient_calibration_batches": (
+            int(args.gradient_calibration_batches) if args.prune_method == "gradient" else None
+        ),
+        "gradient_calibration_batch_size": (
+            int(args.gradient_calibration_batch_size or args.batch_size or 4)
+            if args.prune_method == "gradient"
+            else None
+        ),
         "classifier_reinitialized_after_pruning": bool(args.reinitialize_classifier_from_responses),
         "classifier_init_batch_size": (
             int(args.classifier_init_batch_size)
@@ -912,41 +1028,65 @@ def run_condition(
     mask_path = ""
     progressive_logs: list[dict[str, Any]] = []
     masks: dict[str, torch.Tensor] = {}
+    train_rows: list[dict[str, str]] | None = None
+    if pruning_mode == "progressive" or (pruning_mode == "oneshot" and args.prune_method == "gradient"):
+        train_path = infer_recovery_train_path(args, bundle)
+        if not train_path:
+            raise ValueError(
+                f"{args.prune_method} {pruning_mode} pruning needs --recovery_train_path, or an encoder checkpoint "
+                "with scenic_sft_metadata.json config.data.train_json."
+            )
+        train_rows = load_prompt_target_rows(train_path)
 
     if pruning_mode == "dense":
-        stats = current_linear_sparsity_summary(bundle.model, sparsity_config, target_sparsity=0.0)
-    elif pruning_mode == "oneshot":
-        masks, stats = apply_magnitude_pruning(
+        stats = current_linear_sparsity_summary(
             bundle.model,
-            sparsity=target_sparsity,
-            config=sparsity_config,
+            sparsity_config,
+            target_sparsity=0.0,
+            method=args.prune_method,
+        )
+    elif pruning_mode == "oneshot":
+        masks, stats = apply_pruning_method(
+            bundle=bundle,
+            args=args,
+            sparsity_config=sparsity_config,
+            target_sparsity=target_sparsity,
+            masks=None,
+            train_rows=train_rows,
+            device=device,
+            dtype=dtype,
+            seed=int(args.seed),
         )
         maybe_reinitialize_encoder_classifier(bundle, args, device)
-        stats = current_linear_sparsity_summary(bundle.model, sparsity_config, target_sparsity)
+        stats = current_linear_sparsity_summary(
+            bundle.model,
+            sparsity_config,
+            target_sparsity,
+            method=args.prune_method,
+        )
         mask_file = output_dir / "masks" / f"masks_{model_family}_{pruning_mode}_{label}_{args.seed}.pt"
         save_masks(mask_file, masks, {**pruning_config, **stats})
         mask_path = str(mask_file)
         checkpoint_dir = output_dir / "checkpoints" / f"{model_family}_{pruning_mode}_{label}_{args.seed}"
         checkpoint_path = str(checkpoint_dir)
     elif pruning_mode == "progressive":
-        train_path = infer_recovery_train_path(args, bundle)
-        if not train_path:
-            raise ValueError(
-                "Progressive recovery fine-tuning needs --recovery_train_path, or an encoder checkpoint "
-                "with scenic_sft_metadata.json config.data.train_json."
-            )
-        train_rows = load_prompt_target_rows(train_path)
+        assert train_rows is not None
         optimizer = torch.optim.AdamW(bundle.model.parameters(), lr=float(training_config["learning_rate"]))
         hooks: list[Any] = []
         try:
             for stage_index, stage_sparsity in enumerate(stage_schedule(target_sparsity), start=1):
                 if hooks:
                     remove_hooks(hooks)
-                masks, stats = apply_magnitude_pruning(
-                    bundle.model,
-                    sparsity=stage_sparsity,
-                    config=sparsity_config,
+                masks, stats = apply_pruning_method(
+                    bundle=bundle,
+                    args=args,
+                    sparsity_config=sparsity_config,
+                    target_sparsity=stage_sparsity,
                     masks=masks or None,
+                    train_rows=train_rows,
+                    device=device,
+                    dtype=dtype,
+                    seed=int(args.seed) + stage_index * 10,
                 )
                 hooks = register_mask_gradient_hooks(bundle.model, masks)
                 if int(args.recovery_epochs_per_stage) <= 0:
@@ -976,7 +1116,12 @@ def run_condition(
                         seed=int(args.seed) + stage_index * 100 + recovery_epoch,
                     )
                     val_em1, val_em5 = validation_scores(bundle, validation_samples, args, device)
-                    stats = current_linear_sparsity_summary(bundle.model, sparsity_config, stage_sparsity)
+                    stats = current_linear_sparsity_summary(
+                        bundle.model,
+                        sparsity_config,
+                        stage_sparsity,
+                        method=args.prune_method,
+                    )
                     progressive_logs.append(
                         {
                             "stage": stage_index,
@@ -1003,7 +1148,12 @@ def run_condition(
                     seed=int(args.seed) + 10_000 + final_epoch,
                 )
                 val_em1, val_em5 = validation_scores(bundle, validation_samples, args, device)
-                stats = current_linear_sparsity_summary(bundle.model, sparsity_config, target_sparsity)
+                stats = current_linear_sparsity_summary(
+                    bundle.model,
+                    sparsity_config,
+                    target_sparsity,
+                    method=args.prune_method,
+                )
                 progressive_logs.append(
                     {
                         "stage": "final",
@@ -1020,7 +1170,12 @@ def run_condition(
             remove_hooks(hooks)
 
         maybe_reinitialize_encoder_classifier(bundle, args, device)
-        stats = current_linear_sparsity_summary(bundle.model, sparsity_config, target_sparsity)
+        stats = current_linear_sparsity_summary(
+            bundle.model,
+            sparsity_config,
+            target_sparsity,
+            method=args.prune_method,
+        )
         mask_file = output_dir / "masks" / f"masks_{model_family}_{pruning_mode}_{label}_{args.seed}.pt"
         save_masks(mask_file, masks, {**pruning_config, **stats})
         mask_path = str(mask_file)

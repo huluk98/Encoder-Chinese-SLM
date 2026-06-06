@@ -22,7 +22,7 @@ data:
   max_length: 128
 
 train:
-  epochs: 10
+  epochs: 5
   max_steps: null
   batch_size: 64
   contrastive_batch_size: 64

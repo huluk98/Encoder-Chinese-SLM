@@ -18,6 +18,7 @@ from chatlm_encoder.linear_sparsity import (  # noqa: E402
     LinearSparsityConfig,
     apply_magnitude_pruning,
     apply_masks,
+    apply_score_pruning,
     collect_prunable_linear_modules,
     register_mask_gradient_hooks,
     remove_hooks,
@@ -69,6 +70,18 @@ class LinearSparsityTests(unittest.TestCase):
         fill_nonzero(model)
         _masks, stats = apply_magnitude_pruning(model, 0.50, LinearSparsityConfig())
         self.assertAlmostEqual(stats["targeted_linear_sparsity_actual"], 0.50, places=6)
+
+    def test_score_pruning_reaches_target_and_records_method(self) -> None:
+        model = ToyModel()
+        fill_nonzero(model)
+        modules = collect_prunable_linear_modules(model)
+        scores = {
+            name: torch.arange(1, module.weight.numel() + 1, dtype=torch.float32).reshape_as(module.weight)
+            for name, module in modules
+        }
+        _masks, stats = apply_score_pruning(model, scores, 0.30, LinearSparsityConfig(), method="gradient")
+        self.assertEqual(stats["prune_method"], "gradient")
+        self.assertAlmostEqual(stats["targeted_linear_sparsity_actual"], 0.30, places=6)
 
     def test_mask_enforcement_keeps_pruned_weights_zero_after_optimizer_step(self) -> None:
         model = nn.Sequential(nn.Linear(4, 2, bias=False))

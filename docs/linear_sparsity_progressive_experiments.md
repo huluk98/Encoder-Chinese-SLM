@@ -1,21 +1,22 @@
 # Linear Sparsity and Progressive Recovery Experiments
 
-This experiment block measures whether SCENIC IoT command-normalization accuracy is stable when linear weights are pruned at 0%, 30%, and 50% sparsity. It keeps the original four pruning methods as one-shot controls with classifier rebuild, and adds a separate progressive magnitude-pruning condition with one recovery retune epoch, plus easy/medium/hard benchmark reporting for EM@1 and EM@5.
+This experiment block measures whether SCENIC IoT command-normalization accuracy is stable when linear weights are pruned at 30% and 50% sparsity. The base wrapper trains both regular SFT and contrastive SFT for 5 epochs, keeps the original pruning methods as one-shot controls with classifier rebuild, and adds dense baselines plus progressive magnitude-pruning conditions with one recovery retune epoch after each pruning stage and one final recovery epoch, plus easy/medium/hard benchmark reporting for EM@1 and EM@5.
 
 ## Experiment Conditions
 
 The one-line wrapper creates these conditions from a base encoder checkpoint:
 
-- Original one-shot controls at 50%: `magnitude`, `nvidia_2_4`, `wanda`, and `gradient`. These are still one-shot only and use `--reinitialize-classifier-from-responses`.
-- Added linear-sparsity retune block at 0%, 30%, and 50%: dense baseline plus progressive staged magnitude masks, followed by exactly one recovery retune epoch by default.
+- Original one-shot controls for each SFT checkpoint: `magnitude`, `wanda`, and `gradient` at 30%, plus `magnitude`, `wanda`, `gradient`, and `nvidia24` at 50%. NVIDIA 2:4 is skipped at 30% because it is exactly 50% sparse. These are still one-shot only and use `--reinitialize-classifier-from-responses`.
+- Dense baselines for regular SFT and contrastive SFT.
+- Added gradual retune block for each SFT checkpoint: progressive staged magnitude masks at 30% and 50%, with one recovery retune epoch after every pruning stage and one final recovery epoch after all stages.
 
 The lower-level Python runner can create these conditions from an existing SCENIC SFT checkpoint:
 
 - `dense_0`: no pruning, target sparsity `0.00`.
-- `oneshot_30`: magnitude-prune selected Linear weights once to `0.30`.
-- `oneshot_50`: magnitude-prune selected Linear weights once to `0.50`.
-- `progressive_30`: staged pruning through `0.10`, `0.20`, `0.30`, then one recovery retune epoch by default.
-- `progressive_50`: staged pruning through `0.10`, `0.20`, `0.30`, `0.40`, `0.50`, then one recovery retune epoch by default.
+- `progressive_30`: staged magnitude pruning through `0.10`, `0.20`, `0.30`, with one recovery retune epoch after each stage and one final recovery epoch by default.
+- `progressive_50`: staged magnitude pruning through `0.10`, `0.20`, `0.30`, `0.40`, `0.50`, with one recovery retune epoch after each stage and one final recovery epoch by default.
+
+The expected final wrapper count is 20 result rows: 7 original one-shot rows for regular SFT, 7 original one-shot rows for contrastive SFT, 2 dense baseline rows, 2 progressive magnitude rows for regular SFT, and 2 progressive magnitude rows for contrastive SFT.
 
 The 30% and 50% levels bracket a moderate compression setting and the original 50% setting, making it possible to report whether the paper conclusion is stable across sparsity severity.
 
@@ -73,14 +74,14 @@ Preferred one-line run from a base encoder checkpoint:
 ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
 ```
 
-This trains the SCENIC SFT checkpoint from the supplied base model unless `RETRAIN=0` and `DENSE_CHECKPOINT` already exists. It then runs the original four methods as one-shot pruning with classifier rebuild, followed by the added 0/30/50 linear-sparsity retune block.
+This trains regular SFT and contrastive SFT checkpoints from the supplied base model unless `RETRAIN=0` and the dense checkpoint paths already exist. Training uses `./scripts/launch_scenic_sft_8gpu.sh` by default (`TRAIN_WITH_TORCHRUN=1`, `NPROC_PER_NODE=8`, `CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7`). Legacy one-shot pruning runs through `torchrun --nproc_per_node=$NPROC_PER_NODE`, with ranks sharding the one-shot job manifest. Added progressive/linear pruning jobs are split across `SPARSITY_GPU_IDS`.
 
 Useful overrides:
 
 ```bash
-RETRAIN=0 DENSE_CHECKPOINT=runs/scenic-sft-training-dataset/latest ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
-RETUNE_EPOCHS=1 RUN_PLOTS=0 ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
-TRAIN_WITH_TORCHRUN=1 NPROC_PER_NODE=8 ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
+RETRAIN=0 REGULAR_DENSE_CHECKPOINT=runs/scenic-sft-training-dataset/latest CONTRASTIVE_DENSE_CHECKPOINT=runs/scenic-sft-contrastive-dataset/latest ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
+RECOVERY_EPOCHS_PER_STAGE=1 FINAL_RECOVERY_EPOCHS=1 RUN_PLOTS=0 ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
+SFT_EPOCHS=5 TRAIN_WITH_TORCHRUN=1 NPROC_PER_NODE=8 SPARSITY_GPU_IDS=0,1,2,3,4,5,6,7 ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/encoder-base-checkpoint
 ```
 
 Lower-level encoder-decoder-style command:
@@ -92,11 +93,11 @@ python scripts/run_sparsity_experiments.py \
   --model_checkpoint PATH_TO_CHECKPOINT \
   --benchmark_path PATH_TO_BENCHMARK \
   --benchmark_difficulty_path PATH_TO_DIFFICULTY_LABELS \
-  --sparsity_levels 0 0.3 0.5 \
-  --pruning_modes dense oneshot progressive \
+  --sparsity_levels 0.3 0.5 \
+  --pruning_modes dense progressive \
   --prune_scope linear_weights \
   --prune_method magnitude \
-  --recovery_epochs_per_stage 0 \
+  --recovery_epochs_per_stage 1 \
   --final_recovery_epochs 1 \
   --num_beams 5 \
   --num_return_sequences 5 \
@@ -112,8 +113,11 @@ python scripts/run_sparsity_experiments.py \
   --model_family encoder_only \
   --model_checkpoint runs/scenic-sft-training-dataset/latest \
   --benchmark_path data/scenic/iot_instruction_benchmark_200.json \
-  --sparsity_levels 0 0.3 0.5 \
-  --pruning_modes dense oneshot progressive \
+  --sparsity_levels 0.3 0.5 \
+  --pruning_modes dense progressive \
+  --prune_method magnitude \
+  --recovery_epochs_per_stage 1 \
+  --final_recovery_epochs 1 \
   --seed 42 \
   --output_dir results/scenic_linear_sparsity_0_30_50
 ```
@@ -132,6 +136,9 @@ python scripts/plot_sparsity_results.py \
 
 Each run writes:
 
+- `all_sparsity_results.json` with regular and contrastive SFT rows in one payload
+- `original_one_shot_reference_methods/original_one_shot_summary.csv`
+- `linear_sparsity_retune/{regular_sft,contrastive_sft}/summary_metrics.csv`
 - `predictions_{model_family}_{pruning_mode}_{sparsity}_{seed}.csv`
 - `summary_metrics.csv`
 - `paper_table_sparsity_difficulty.csv`
@@ -144,4 +151,4 @@ Each run writes:
 
 ## Paper Use
 
-Use `paper_table_sparsity_difficulty.csv` for the main revised-paper table. Cite `summary_metrics.csv` for retention values and confidence intervals. For methods text, state that pruning is unstructured magnitude pruning over selected Linear weights, with per-layer sparsity by default and masks enforced after every optimizer step during progressive recovery.
+Use `paper_table_sparsity_difficulty.csv` for the main revised-paper table. Cite `summary_metrics.csv` for confidence intervals and progressive logs for the per-stage recovery schedule. For methods text, state that the gradual block uses unstructured magnitude pruning over selected Linear weights, with per-layer sparsity by default, one recovery retune epoch after each stage, one final recovery epoch after all stages, and masks enforced after every optimizer step during recovery.

@@ -116,6 +116,36 @@ def _mask_for_weight(
     return flat_mask.reshape_as(weight)
 
 
+def _mask_for_scores(
+    scores: torch.Tensor,
+    sparsity: float,
+    existing_mask: torch.Tensor | None = None,
+    regrowth: bool = False,
+) -> torch.Tensor:
+    flat_scores = scores.detach().float().reshape(-1)
+    numel = int(flat_scores.numel())
+    keep_count = _keep_count(numel, sparsity)
+    if keep_count <= 0:
+        return torch.zeros_like(scores, dtype=torch.bool)
+
+    eligible = torch.ones(numel, dtype=torch.bool, device=scores.device)
+    if existing_mask is not None and not regrowth:
+        eligible = existing_mask.to(device=scores.device, dtype=torch.bool).reshape(-1)
+        keep_count = min(keep_count, int(eligible.sum().item()))
+        if keep_count <= 0:
+            return torch.zeros_like(scores, dtype=torch.bool)
+
+    if keep_count >= numel and bool(eligible.all().item()):
+        return torch.ones_like(scores, dtype=torch.bool)
+
+    masked_scores = flat_scores.clone()
+    masked_scores[~eligible] = -torch.inf
+    keep_indices = torch.topk(masked_scores, k=keep_count, largest=True, sorted=False).indices
+    flat_mask = torch.zeros(numel, dtype=torch.bool, device=scores.device)
+    flat_mask[keep_indices] = True
+    return flat_mask.reshape_as(scores)
+
+
 def _global_masks(
     modules: list[tuple[str, nn.Linear]],
     sparsity: float,
@@ -135,6 +165,61 @@ def _global_masks(
         existing = (existing_masks or {}).get(name)
         if existing is not None and not regrowth:
             eligible_chunks.append(existing.to(device=weight.device, dtype=torch.bool).reshape(-1))
+        else:
+            eligible_chunks.append(torch.ones_like(flat, dtype=torch.bool))
+
+    if not scores:
+        return {}
+
+    all_scores = torch.cat(scores)
+    eligible = torch.cat(eligible_chunks)
+    keep_count = _keep_count(int(all_scores.numel()), sparsity)
+    if not regrowth:
+        keep_count = min(keep_count, int(eligible.sum().item()))
+    masked_scores = all_scores.clone()
+    masked_scores[~eligible] = -torch.inf
+
+    flat_mask = torch.zeros_like(eligible, dtype=torch.bool)
+    if keep_count > 0:
+        keep_indices = torch.topk(masked_scores, k=keep_count, largest=True, sorted=False).indices
+        flat_mask[keep_indices] = True
+
+    masks: dict[str, torch.Tensor] = {}
+    offset = 0
+    for name, score in zip(names, scores):
+        end = offset + int(score.numel())
+        masks[name] = flat_mask[offset:end].reshape(shapes[name])
+        offset = end
+    return masks
+
+
+def _global_masks_from_scores(
+    modules: list[tuple[str, nn.Linear]],
+    score_tensors: dict[str, torch.Tensor],
+    sparsity: float,
+    existing_masks: dict[str, torch.Tensor] | None = None,
+    regrowth: bool = False,
+) -> dict[str, torch.Tensor]:
+    names: list[str] = []
+    scores: list[torch.Tensor] = []
+    eligible_chunks: list[torch.Tensor] = []
+    shapes: dict[str, torch.Size] = {}
+    for name, module in modules:
+        if name not in score_tensors:
+            raise KeyError(f"Missing score tensor for prunable module {name!r}.")
+        score = score_tensors[name].to(device=module.weight.device).detach().float()
+        if score.shape != module.weight.shape:
+            raise ValueError(
+                f"Score tensor for {name!r} has shape {list(score.shape)}, "
+                f"expected {list(module.weight.shape)}."
+            )
+        flat = score.reshape(-1)
+        names.append(name)
+        scores.append(flat)
+        shapes[name] = module.weight.shape
+        existing = (existing_masks or {}).get(name)
+        if existing is not None and not regrowth:
+            eligible_chunks.append(existing.to(device=module.weight.device, dtype=torch.bool).reshape(-1))
         else:
             eligible_chunks.append(torch.ones_like(flat, dtype=torch.bool))
 
@@ -251,10 +336,82 @@ def apply_magnitude_pruning(
     return {name: mask.detach().cpu() for name, mask in new_masks.items()}, summary
 
 
+def apply_score_pruning(
+    model: nn.Module,
+    score_tensors: dict[str, torch.Tensor],
+    sparsity: float,
+    config: LinearSparsityConfig | None = None,
+    masks: dict[str, torch.Tensor] | None = None,
+    method: str = "score",
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    config = config or LinearSparsityConfig()
+    modules = collect_prunable_linear_modules(model, prune_output_heads=config.prune_output_heads)
+    if not modules:
+        raise RuntimeError("No prunable nn.Linear modules matched the configured pruning scope.")
+
+    if config.global_pruning:
+        new_masks = _global_masks_from_scores(
+            modules,
+            score_tensors=score_tensors,
+            sparsity=sparsity,
+            existing_masks=masks,
+            regrowth=config.regrowth,
+        )
+    else:
+        new_masks = {}
+        for name, module in modules:
+            if name not in score_tensors:
+                raise KeyError(f"Missing score tensor for prunable module {name!r}.")
+            score = score_tensors[name].to(device=module.weight.device).detach().float()
+            if score.shape != module.weight.shape:
+                raise ValueError(
+                    f"Score tensor for {name!r} has shape {list(score.shape)}, "
+                    f"expected {list(module.weight.shape)}."
+                )
+            new_masks[name] = _mask_for_scores(
+                score,
+                sparsity=sparsity,
+                existing_mask=(masks or {}).get(name),
+                regrowth=config.regrowth,
+            )
+
+    apply_masks(model, new_masks)
+    target_stats = targeted_linear_sparsity(modules)
+    whole_stats = whole_model_sparsity(model)
+    summary = {
+        "prune_scope": "linear_weights",
+        "prune_method": method,
+        "target_sparsity": float(sparsity),
+        "prune_output_heads": bool(config.prune_output_heads),
+        "global_pruning": bool(config.global_pruning),
+        "regrowth": bool(config.regrowth),
+        "targeted_linear_parameters": int(target_stats["numel"]),
+        "targeted_linear_zeros": int(target_stats["zeros"]),
+        "targeted_linear_sparsity_actual": float(target_stats["sparsity"]),
+        "whole_model_parameters": int(whole_stats["numel"]),
+        "whole_model_zeros": int(whole_stats["zeros"]),
+        "whole_model_sparsity_actual": float(whole_stats["sparsity"]),
+        "selected_linear_tensors": [
+            {
+                "name": name,
+                "shape": list(module.weight.shape),
+                "numel": int(module.weight.numel()),
+                "zeros": count_zeros(module.weight),
+                "sparsity": count_zeros(module.weight) / int(module.weight.numel())
+                if int(module.weight.numel())
+                else 0.0,
+            }
+            for name, module in modules
+        ],
+    }
+    return {name: mask.detach().cpu() for name, mask in new_masks.items()}, summary
+
+
 def current_linear_sparsity_summary(
     model: nn.Module,
     config: LinearSparsityConfig | None = None,
     target_sparsity: float = 0.0,
+    method: str = "magnitude",
 ) -> dict[str, Any]:
     config = config or LinearSparsityConfig()
     modules = collect_prunable_linear_modules(model, prune_output_heads=config.prune_output_heads)
@@ -262,7 +419,7 @@ def current_linear_sparsity_summary(
     whole_stats = whole_model_sparsity(model)
     return {
         "prune_scope": "linear_weights",
-        "prune_method": "magnitude",
+        "prune_method": method,
         "target_sparsity": float(target_sparsity),
         "prune_output_heads": bool(config.prune_output_heads),
         "global_pruning": bool(config.global_pruning),
