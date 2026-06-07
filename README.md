@@ -28,6 +28,20 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the exact architecture classification
 See [PRETRAINING_AUDIT.md](PRETRAINING_AUDIT.md) for the BERT/RoBERTa tokenization and MLM training audit.
 See [BENCHMARKS.md](BENCHMARKS.md) for C-Eval output notes after training.
 
+## Cite This Repository
+
+If you use this repository, please cite it as:
+
+```bibtex
+@software{huluk98_encoder_chinese_slm_2026,
+  author = {huluk98},
+  title = {Encoder-Chinese-SLM: Encoder-Only Chinese Mini MLM},
+  year = {2026},
+  version = {0.1.0},
+  url = {https://github.com/huluk98/Encoder-Chinese-SLM}
+}
+```
+
 ## License
 
 This repository's code and documentation are released under the [MIT License](LICENSE). External datasets and model resources referenced by this project remain governed by their respective source licenses and terms.

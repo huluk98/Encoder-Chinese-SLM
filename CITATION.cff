@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite it using the metadata below."
+title: "Encoder-Chinese-SLM: Encoder-Only Chinese Mini MLM"
+version: "0.1.0"
+type: software
+authors:
+  - name: "huluk98"
+repository-code: "https://github.com/huluk98/Encoder-Chinese-SLM"
+url: "https://github.com/huluk98/Encoder-Chinese-SLM"
+license: "MIT"
