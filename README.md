@@ -28,19 +28,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the exact architecture classification
 See [PRETRAINING_AUDIT.md](PRETRAINING_AUDIT.md) for the BERT/RoBERTa tokenization and MLM training audit.
 See [BENCHMARKS.md](BENCHMARKS.md) for C-Eval output notes after training.
 
-## Cite This Repository
+## How To Cite
 
-If you use this repository, please cite it as:
+GitHub can read [`CITATION.cff`](CITATION.cff) and show a "Cite this repository" button. For an IEEE-style references section, you can paste this entry:
+
+```text
+[1] huluk98, "Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase," GitHub repository, version 0.1.0, 2026. [Online]. Available: https://github.com/huluk98/Encoder-Chinese-SLM
+```
+
+Use this BibTeX entry for this codebase:
 
 ```bibtex
-@software{huluk98_encoder_chinese_slm_2026,
+@software{encoder_chinese_slm_2026,
   author = {huluk98},
-  title = {Encoder-Chinese-SLM: Encoder-Only Chinese Mini MLM},
+  title = {Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase},
   year = {2026},
   version = {0.1.0},
   url = {https://github.com/huluk98/Encoder-Chinese-SLM}
 }
 ```
+
+When describing the model architecture or training recipe, also cite the upstream datasets, benchmarks, and software listed in [REFERENCES.md](REFERENCES.md).
 
 ## License
 
