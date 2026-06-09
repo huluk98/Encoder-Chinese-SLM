@@ -1,12 +1,13 @@
 # Linear Sparsity and Progressive Recovery Experiments
 
-This experiment block measures whether SCENIC IoT command-normalization accuracy is stable when linear weights are pruned at 30% and 50% sparsity. The base wrapper trains both regular SFT and contrastive SFT for 5 epochs, keeps the original pruning methods as one-shot controls with classifier rebuild, and adds dense baselines plus progressive magnitude-pruning conditions with one recovery retune epoch after each pruning stage and one final recovery epoch, plus easy/medium/hard benchmark reporting for EM@1 and EM@5.
+This experiment block measures whether SCENIC IoT command-normalization accuracy is stable when linear weights are pruned at 30% and 50% sparsity. The base wrapper evaluates the encoder-only base checkpoint as a dense SCENIC baseline, trains both regular SFT and contrastive SFT for 5 epochs, keeps the original pruning methods as one-shot controls with classifier rebuild, and adds dense baselines plus progressive magnitude-pruning conditions with one recovery retune epoch after each pruning stage and one final recovery epoch, plus easy/medium/hard benchmark reporting for EM@1 and EM@5.
 
 ## Experiment Conditions
 
 The one-line wrapper creates these conditions from a base encoder checkpoint:
 
 - Original one-shot controls for each SFT checkpoint: `magnitude`, `wanda`, and `gradient` at 30%, plus `magnitude`, `wanda`, `gradient`, and `nvidia24` at 50%. NVIDIA 2:4 is skipped at 30% because it is exactly 50% sparse. These are still one-shot only and use `--reinitialize-classifier-from-responses`.
+- Base encoder-only dense baseline, evaluated before SFT on both the SCENIC training data and benchmark. The response classifier is initialized from the training response texts so the base encoder can be scored with the same EM@1/EM@5 evaluator.
 - Dense baselines for regular SFT and contrastive SFT.
 - Added gradual retune block for each SFT checkpoint: progressive staged magnitude masks at 30% and 50%, with one recovery retune epoch after every pruning stage and one final recovery epoch after all stages.
 
@@ -16,7 +17,7 @@ The lower-level Python runner can create these conditions from an existing SCENI
 - `progressive_30`: staged magnitude pruning through `0.10`, `0.20`, `0.30`, with one recovery retune epoch after each stage and one final recovery epoch by default.
 - `progressive_50`: staged magnitude pruning through `0.10`, `0.20`, `0.30`, `0.40`, `0.50`, with one recovery retune epoch after each stage and one final recovery epoch by default.
 
-The expected final wrapper count is 20 result rows: 7 original one-shot rows for regular SFT, 7 original one-shot rows for contrastive SFT, 2 dense baseline rows, 2 progressive magnitude rows for regular SFT, and 2 progressive magnitude rows for contrastive SFT.
+The expected final wrapper count is 21 result rows: 1 base encoder-only dense baseline row, 7 original one-shot rows for regular SFT, 7 original one-shot rows for contrastive SFT, 2 SFT dense baseline rows, 2 progressive magnitude rows for regular SFT, and 2 progressive magnitude rows for contrastive SFT.
 
 The 30% and 50% levels bracket a moderate compression setting and the original 50% setting, making it possible to report whether the paper conclusion is stable across sparsity severity.
 

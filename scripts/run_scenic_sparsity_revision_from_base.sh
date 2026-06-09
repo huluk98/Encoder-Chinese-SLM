@@ -15,6 +15,11 @@ EXPERIMENT_NAME="${EXPERIMENT_NAME:-scenic_linear_sparsity_0_30_50}"
 RUN_ROOT="${RUN_ROOT:-runs/$EXPERIMENT_NAME}"
 RESULT_ROOT="${RESULT_ROOT:-results/$EXPERIMENT_NAME}"
 
+BASELINE_RUN_DIR="${BASELINE_RUN_DIR:-$RUN_ROOT/base_encoder_dense}"
+BASELINE_DENSE_CHECKPOINT="${BASELINE_DENSE_CHECKPOINT:-$BASELINE_RUN_DIR/latest}"
+BASELINE_RESULT_ROOT="${BASELINE_RESULT_ROOT:-$RESULT_ROOT/base_encoder_dense}"
+INCLUDE_BASE_ENCODER_BASELINE="${INCLUDE_BASE_ENCODER_BASELINE:-1}"
+
 REGULAR_SFT_RUN_DIR="${REGULAR_SFT_RUN_DIR:-${SFT_RUN_DIR:-$RUN_ROOT/regular_sft}}"
 REGULAR_DENSE_CHECKPOINT="${REGULAR_DENSE_CHECKPOINT:-${DENSE_CHECKPOINT:-$REGULAR_SFT_RUN_DIR/latest}}"
 REGULAR_SFT_CONFIG_TEMPLATE="${REGULAR_SFT_CONFIG_TEMPLATE:-${SFT_CONFIG_TEMPLATE:-configs/scenic_sft_training_dataset_8gpu.yaml}}"
@@ -73,6 +78,7 @@ RUN_PLOTS="${RUN_PLOTS:-1}"
 mkdir -p "$RUN_ROOT" "$RESULT_ROOT" "$ORIGINAL_RUN_ROOT" "$ORIGINAL_RESULT_ROOT"
 
 echo "[sparsity-revision] base_model=$BASE_MODEL"
+echo "[sparsity-revision] base_encoder_baseline=$INCLUDE_BASE_ENCODER_BASELINE checkpoint=$BASELINE_DENSE_CHECKPOINT"
 echo "[sparsity-revision] regular_dense_checkpoint=$REGULAR_DENSE_CHECKPOINT"
 echo "[sparsity-revision] contrastive_dense_checkpoint=$CONTRASTIVE_DENSE_CHECKPOINT"
 echo "[sparsity-revision] sft_epochs=$SFT_EPOCHS train_with_torchrun=$TRAIN_WITH_TORCHRUN nproc=$NPROC_PER_NODE"
@@ -256,6 +262,116 @@ eval_checkpoint_json() {
     --max-length "$MAX_LENGTH" \
     --dtype "$EVAL_DTYPE"
 }
+
+build_base_encoder_baseline() {
+  local output_checkpoint="$1"
+
+  "$PYTHON" - "$BASE_MODEL" "$TOKENIZER_PATH" "$TRAIN_JSON" "$REGULAR_SFT_CONFIG" "$REGULAR_SFT_CONFIG_TEMPLATE" "$output_checkpoint" "$CLASSIFIER_INIT_BATCH_SIZE" "$CLASSIFIER_INIT_MAX_LENGTH" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import torch
+import yaml
+
+PROJECT_ROOT = Path.cwd()
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from chatlm_encoder.scenic_sft import (  # noqa: E402
+    build_label_maps,
+    initialize_classifier_from_responses,
+    load_base_scenic_model,
+    load_prompt_response_rows,
+    save_scenic_checkpoint,
+)
+
+(
+    base_model,
+    tokenizer_path,
+    train_json,
+    regular_config_path,
+    regular_template_path,
+    output_checkpoint,
+    classifier_init_batch_size,
+    classifier_init_max_length,
+) = sys.argv[1:]
+
+config_path = Path(regular_config_path)
+if not config_path.exists():
+    config_path = Path(regular_template_path)
+with config_path.open("r", encoding="utf-8") as handle:
+    config = yaml.safe_load(handle) or {}
+
+model_config = dict(config.get("model") or {})
+data_config = dict(config.get("data") or {})
+model_config["base_model"] = base_model
+if tokenizer_path:
+    model_config["tokenizer_path"] = tokenizer_path
+data_config["train_json"] = train_json
+
+rows = load_prompt_response_rows(train_json)
+_response_to_label, label2response = build_label_maps(rows)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model, tokenizer = load_base_scenic_model(
+    base_model=base_model,
+    tokenizer_path=model_config.get("tokenizer_path"),
+    num_labels=len(label2response),
+    dropout=float(model_config.get("dropout", 0.1)),
+    pooling=str(model_config.get("pooling", "cls")),
+    normalize_logits=bool(model_config.get("normalize_logits", False)),
+    logit_scale=float(model_config.get("logit_scale", 20.0)),
+)
+model.to(device)
+initialize_classifier_from_responses(
+    model=model,
+    tokenizer=tokenizer,
+    label2response=label2response,
+    device=device,
+    max_length=int(classifier_init_max_length or data_config.get("max_length", 128)),
+    batch_size=int(classifier_init_batch_size or model_config.get("classifier_init_batch_size", 128)),
+)
+metadata = {
+    "step": 0,
+    "finished": True,
+    "baseline": "base_encoder_dense",
+    "train_rows": len(rows),
+    "classifier_initialized_from_responses": True,
+    "config": {
+        **config,
+        "model": model_config,
+        "data": data_config,
+    },
+}
+save_scenic_checkpoint(model, tokenizer, output_checkpoint, label2response, metadata)
+print(f"[sparsity-revision] saved base encoder baseline checkpoint: {output_checkpoint}")
+PY
+}
+
+if [[ "$INCLUDE_BASE_ENCODER_BASELINE" == "1" ]]; then
+  mkdir -p "$BASELINE_RESULT_ROOT"
+  if [[ "$OVERWRITE" == "1" || ! -e "$BASELINE_DENSE_CHECKPOINT" ]]; then
+    echo "[sparsity-revision] building base encoder dense SCENIC baseline"
+    build_base_encoder_baseline "$BASELINE_DENSE_CHECKPOINT"
+  else
+    echo "[sparsity-revision] reusing base encoder dense SCENIC baseline"
+  fi
+
+  echo "[sparsity-revision] eval base encoder baseline on training data"
+  eval_checkpoint_json \
+    "$BASELINE_DENSE_CHECKPOINT" \
+    "$TRAIN_JSON" \
+    "$BASELINE_RESULT_ROOT/training_predictions.jsonl" \
+    "$BASELINE_RESULT_ROOT/training_summary.json"
+
+  echo "[sparsity-revision] eval base encoder baseline on benchmark data"
+  eval_checkpoint_json \
+    "$BASELINE_DENSE_CHECKPOINT" \
+    "$BENCHMARK_JSON" \
+    "$BASELINE_RESULT_ROOT/benchmark_predictions.jsonl" \
+    "$BASELINE_RESULT_ROOT/benchmark_summary.json"
+fi
 
 parse_list "$ORIGINAL_METHODS"
 method_names=("${PARSED_LIST[@]}")
@@ -746,6 +862,42 @@ def slug(value: Any) -> str:
 
 
 rows: list[dict[str, Any]] = []
+base_training_summary_path = result_root / "base_encoder_dense" / "training_summary.json"
+base_benchmark_summary_path = result_root / "base_encoder_dense" / "benchmark_summary.json"
+base_training_metrics = metric_block_from_eval_summary(base_training_summary_path)
+base_benchmark_metrics = metric_block_from_eval_summary(base_benchmark_summary_path)
+base_encoder_baseline_rows_expected = 1 if (base_training_metrics or base_benchmark_metrics) else 0
+if base_training_metrics or base_benchmark_metrics:
+    checkpoint_path = None
+    for summary_path in (base_benchmark_summary_path, base_training_summary_path):
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            checkpoint_path = summary.get("checkpoint")
+            if checkpoint_path:
+                break
+    rows.append(
+        {
+            "result_block": "base_encoder_baseline",
+            "model_training": "base_encoder",
+            "run_label": "base_encoder_dense_0.0",
+            "model_family": "encoder_only",
+            "pruning_mode": "dense",
+            "pruning_method": "dense",
+            "method_label": "dense",
+            "target_sparsity": 0.0,
+            "targeted_linear_sparsity_actual": 0.0,
+            "whole_model_sparsity_actual": 0.0,
+            "seed": None,
+            "checkpoint_path": checkpoint_path,
+            "mask_path": None,
+            "training_metrics": base_training_metrics,
+            "benchmark_metrics": base_benchmark_metrics,
+            **flat_metric_fields("training", base_training_metrics),
+            **flat_metric_fields("benchmark", base_benchmark_metrics),
+            "notes": "base encoder-only dense baseline; response classifier initialized from training responses; no SFT recovery or pruning",
+        }
+    )
+
 if original_json.exists():
     for row in json.loads(original_json.read_text(encoding="utf-8")):
         training_metrics = row.get("training_metrics")
@@ -843,12 +995,14 @@ payload = {
         "base_model": base_model,
         "sft_epochs": sft_epochs,
         "model_trainings": ["regular_sft", "contrastive_sft"],
+        "base_encoder_baseline_expected_rows_total": base_encoder_baseline_rows_expected,
         "original_one_shot_expected_rows_per_training": 7,
         "original_one_shot_expected_rows_total": 14,
-        "dense_baseline_expected_rows_total": 2,
+        "sft_dense_baseline_expected_rows_total": 2,
+        "dense_baseline_expected_rows_total": 2 + base_encoder_baseline_rows_expected,
         "progressive_expected_rows_per_training": 2,
         "progressive_expected_rows_total": 4,
-        "expected_rows_total": 20,
+        "expected_rows_total": 20 + base_encoder_baseline_rows_expected,
         "gradual_prune_method": gradual_prune_method,
         "recovery_epochs_per_stage": recovery_epochs_per_stage,
         "final_recovery_epochs": final_recovery_epochs,
@@ -860,6 +1014,8 @@ payload = {
         ),
     },
     "source_files": {
+        "base_encoder_baseline_training_summary": str(base_training_summary_path),
+        "base_encoder_baseline_benchmark_summary": str(base_benchmark_summary_path),
         "original_one_shot_summary": str(original_json),
         "linear_sparsity_retune_summaries": [str(path) for path in retune_csvs],
     },

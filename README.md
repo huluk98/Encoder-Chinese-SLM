@@ -2,13 +2,13 @@
 
 ## SCENIC 8-GPU Sparsity Sweep
 
-Run the full 20-row sparsity comparison from a base model path:
+Run the full 21-row sparsity comparison from a base model path:
 
 ```bash
-SFT_EPOCHS=5 TRAIN_WITH_TORCHRUN=1 LEGACY_WITH_TORCHRUN=1 NPROC_PER_NODE=8 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 SPARSITY_GPU_IDS=0,1,2,3,4,5,6,7 RECOVERY_EPOCHS_PER_STAGE=1 FINAL_RECOVERY_EPOCHS=1 ./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/base-encoder-checkpoint
+./scripts/run_scenic_sparsity_revision_from_base.sh /path/to/base-encoder-checkpoint
 ```
 
-Replace `/path/to/base-encoder-checkpoint` with the model path you want to start from.
+Replace `/path/to/base-encoder-checkpoint` with the model path you want to start from. The script defaults to 5-epoch SFT, 8-GPU torchrun for SFT and one-shot pruning, GPU-split progressive pruning, and a base encoder-only dense baseline.
 
 H20 SFT, NVIDIA 2:4 pruning with rebuilt classifier, ONNX dynamic INT8 comparison, and TensorRT benchmarking entrypoint: `scripts/run_h20_encoder_only_sft_prune_trt24.sh`; native TensorRT INT8 rows still require `trtexec` plus valid Q/DQ ONNX or calibration caches.
 
