@@ -62,5 +62,42 @@ This project is an encoder-only masked language model training counterpart to th
 
 ## Local Reference Project
 
-- Decoder-only source project used as the workflow template  
-  https://github.com/huluk98/Decoder-Chinese-SLM
+- Decoder-Chinese-SLM: A Decoder-Only Chinese Small Language Model Training Codebase
+  Author: huluk98. Version: 0.1.0. Date released: 2026-05-20.
+  Repository: https://github.com/huluk98/Decoder-Chinese-SLM
+  DOI/Zenodo: no DOI is listed in this repository's local reference metadata; cite the repository URL unless an archival DOI is minted.
+
+## This Repository
+
+- Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase
+  Author: huluk98. Version: 0.1.0. Date released: 2026-06-07.
+  Repository: https://github.com/huluk98/Encoder-Chinese-SLM
+  DOI/Zenodo: no DOI is listed in `CITATION.cff`; cite the repository URL unless an archival DOI is minted.
+
+## BibTeX Code Reference
+
+Use this CFF-matching BibLaTeX-compatible entry for this repository:
+
+```bibtex
+@software{huluk98_encoder_chinese_slm_2026,
+  author = {{huluk98}},
+  title = {{Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase}},
+  version = {0.1.0},
+  date = {2026-06-07},
+  url = {https://github.com/huluk98/Encoder-Chinese-SLM},
+  urldate = {2026-06-12},
+  note = {MIT License}
+}
+```
+
+## IEEE Code Reference Text
+
+Use these CFF-matching code references in the paper until Zenodo DOIs are available:
+
+```text
+[8] huluk98, "Decoder-Chinese-SLM: A Decoder-Only Chinese Small Language Model Training Codebase," GitHub repository, version 0.1.0, 2026. [Online]. Available: https://github.com/huluk98/Decoder-Chinese-SLM
+
+[9] huluk98, "Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase," GitHub repository, version 0.1.0, 2026. [Online]. Available: https://github.com/huluk98/Encoder-Chinese-SLM
+```
+
+If either repository is archived through Zenodo later, replace the `[Online]. Available:` repository URL with the Zenodo DOI record and add the DOI in the IEEE reference.
