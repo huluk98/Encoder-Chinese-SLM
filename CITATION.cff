@@ -4,7 +4,8 @@ title: "Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Traini
 version: "0.1.0"
 date-released: "2026-06-07"
 authors:
-  - name: "huluk98"
+  - family-names: "Hu"
+    given-names: "Luke Ztz"
 url: "https://github.com/huluk98/Encoder-Chinese-SLM"
 repository-code: "https://github.com/huluk98/Encoder-Chinese-SLM"
 abstract: "A codebase for training, evaluating, fine-tuning, and pruning a roughly 0.2B parameter encoder-only Chinese small language model with H20 multi-GPU recipes, public Chinese data preparation, SCENIC-style SFT and contrastive SFT, C-Eval evaluation, and sparsity benchmarking utilities."
@@ -25,5 +26,6 @@ preferred-citation:
   version: "0.1.0"
   date-released: "2026-06-07"
   authors:
-    - name: "huluk98"
+    - family-names: "Hu"
+      given-names: "Luke Ztz"
   url: "https://github.com/huluk98/Encoder-Chinese-SLM"

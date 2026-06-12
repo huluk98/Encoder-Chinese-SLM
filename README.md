@@ -33,14 +33,14 @@ See [BENCHMARKS.md](BENCHMARKS.md) for C-Eval output notes after training.
 GitHub can read [`CITATION.cff`](CITATION.cff) and show a "Cite this repository" button. For an IEEE-style references section, you can paste this entry:
 
 ```text
-[1] huluk98, "Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase," GitHub repository, version 0.1.0, 2026. [Online]. Available: https://github.com/huluk98/Encoder-Chinese-SLM
+[1] L. Z. Hu, "Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase," GitHub repository, version 0.1.0, 2026. [Online]. Available: https://github.com/huluk98/Encoder-Chinese-SLM
 ```
 
 Use this BibTeX entry for this codebase:
 
 ```bibtex
 @software{encoder_chinese_slm_2026,
-  author = {huluk98},
+  author = {Hu, Luke Ztz},
   title = {Encoder-Chinese-SLM: An Encoder-Only Chinese Small Language Model Training Codebase},
   year = {2026},
   version = {0.1.0},
